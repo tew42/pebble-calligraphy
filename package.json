@@ -1,0 +1,27 @@
+{
+    "author": "Thomas Winkler",
+    "dependencies": {},
+    "keywords": [
+        "pebble-app"
+    ],
+    "name": "calligraphy",
+    "pebble": {
+        "displayName": "Calligraphy (Minimal v2)",
+        "enableMultiJS": true,
+        "messageKeys": [],
+        "projectType": "native",
+        "resources": {
+            "media": []
+        },
+        "sdkVersion": "3",
+        "targetPlatforms": [
+            "emery",
+            "gabbro"
+        ],
+        "uuid": "073d9861-5368-4914-aefb-d269b0b1c699",
+        "watchapp": {
+            "watchface": true
+        }
+    },
+    "version": "0.1.0"
+}
