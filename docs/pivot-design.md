@@ -420,3 +420,59 @@ against the standard library: the bundled Chromium writes only PNG and the
 bundled ffmpeg is a stripped Playwright build with no GIF encoder, so neither
 tool could close the loop on its own. Its LZW output is round-trip decoded in
 `test_harness.py`, so a silently corrupt GIF cannot ship.
+
+## 16. Curvature-prescribed connector: works, with one broken band
+
+Round 5 inverted the approach. Every construction so far interpolated geometry
+and hoped the curvature came out right; since the requirement is stated on `k`,
+`tools/preview/curvature.py` makes `k` the primitive:
+
+```
+k(s) = (Omega / L) * t^m (1-t)^n / integral(t^m (1-t)^n),   t = s/L
+```
+
+Non-negative so single-signed; zero at both stem junctions for `m, n >= 1`;
+exactly one maximum at `t = m/(m+n)`; continuous; and it turns by exactly
+`Omega = pi - delta`. All structural, none of it tuned.
+
+Because `k` scales as `1/L` the curve is *similar* under `L`, so the solve
+decouples: `q = m/(m+n)` from the chord **direction** (1-D bisection, monotone),
+`L` from the chord **length** (one division), and `nu = m + n` from the required
+**depth**. Concentration is the dial that trades centre-passage against
+curvature continuity, so pinning the depth at both ends of the delta range
+determines it rather than leaving it free. Evaluate the shape in log space
+relative to its peak -- direct evaluation underflows (`t**4000 == 0.0`) and
+silently yields zero curvature.
+
+**What it fixes.** Worst reverse turn in the working range, per stem config:
+
+| stems | D1 cubic | C3 cubic | curvature-prescribed |
+|---|---:|---:|---:|
+| current | 1.91 deg | 0.44 | **0.00** |
+| symmetric | 1.68 | 0.00 | **0.00** |
+| swapped | 1.91 | 0.44 | **0.00** |
+| strong-asym | **6.03** | **5.68** | **0.00** |
+| short | 1.91 | 0.44 | **0.00** |
+| long | 2.12 | 1.15 | **0.00** |
+
+`k` is zero at both junctions to machine precision, depth tracks D1 to about
+1 px, and the rendered shapes are close enough to D1 that adopting it would be
+visually low-risk. It removes the `strong-asym` artifact outright, which nothing
+else did.
+
+**The one defect, and it is real.** The construction has three regimes in
+`delta`, and the middle one is broken:
+
+- `delta >~ 15`: excellent -- reverse turn 0.00, depth within ~1 px of D1.
+- `delta <~ 8`: falls back to the degenerate fold, pinned on the centre, which
+  is the shape wanted there anyway.
+- `delta` 8 to 15: **broken**. The depth jumps 0.00 -> 4.23 px between adjacent
+  minutes at the handover, which would read as a pop once per lap. The solve
+  also needs `nu` of 2e4 to 5e4 through this band, where the curvature spike is
+  about `1/sqrt(nu)` of the span and sits at the edge of what the integration
+  resolves (one probe returned a nonsensical 4e7 px radius).
+
+Not yet attempted: making the handover continuous, either by relaxing the depth
+target across the transition band so the fold and the smooth solve meet, or by
+blending the two curves over it. Both are bounded work, but which depth to
+accept through `delta` 8-15 is a design choice, not a numerical one.
