@@ -10,7 +10,8 @@ python3 report.py --all          # every sheet plus out/metrics.md  (~25 s)
 python3 test_harness.py          # self-checks
 ```
 
-Individual sheets: `--grid --zoom --tilt --stems --profiles --locus --metrics`.
+Individual sheets: `--grid --zoom --curvature --ceiling --tilt --stems
+--profiles --locus --metrics`.
 Useful flags: `--times 12:00,3:00,4:50`, `--stem-config symmetric`.
 
 ## Scope
@@ -37,12 +38,15 @@ Any disagreement is below 1/65535 of a hand length -- far under a pixel.
 | file | what it answers |
 |---|---|
 | `compare-grid.svg` | how each candidate looks on the whole face |
-| `compare-zoom.svg` | the centre region at 2.6x -- **where the decision is made** |
+| `compare-zoom.svg` | the centre region at 2.6x -- where the shape is judged |
+| `curvature-profiles.svg` | \|k\| along the connector -- **the unimodality test** |
+| `ceiling.svg` | the measured unimodal region vs the closed-form ceiling |
 | `tilt-grid.svg` | the beta bracket, zoomed: how much asymmetry is available |
 | `stems-grid.svg` | does the rule survive a change of stem geometry |
 | `profiles.svg` | pivot depth s(delta) for every candidate on one axis |
 | `pivot-locus.svg` | the pivot's path over a full 12 hours -- 11-lobed rosettes |
-| `metrics.md` | all 720 positions x 12 candidates x 6 stem configs |
+| `metrics.md` | all 720 positions x 17 candidates x 6 stem configs |
+| `ceiling.json` | the bisected unimodality limit, cached |
 
 In the sheets: **white** = candidate, **amber** = C0, the current construction,
 drawn as a reference underlay, **blue** = the pivot, **dashed** = the tangent
@@ -50,12 +54,22 @@ triangle A-B-centre.
 
 ## Where things live
 
-- `geometry.py` -- the port, the `(mu, beta)` pivot family, the candidate registry
+- `geometry.py` -- the port, the `(mu, beta)` pivot family, the two ceilings
+  (`chord_ceiling` and the binding `arc_apex_ceiling`), the candidate registry
   and the stem configurations. Stem radii and hand lengths are parameters, so
   every candidate can be swept over alternative geometries.
 - `svgcanvas.py` -- the SVG writer.
 - `report.py` -- metrics and sheet generation.
 - `test_harness.py` -- invariants: construction fidelity, tangent-triangle
-  containment, stem homogeneity and mirror symmetry, curvature continuity.
+  containment, stem homogeneity and mirror symmetry, curvature continuity, and
+  unimodality of the round-2 depth rules across every stem configuration (with
+  the illustration candidates asserted to *fail*, so the sheets keep making
+  their point).
+
+Two metric guards worth knowing about, because without them the numbers lie:
+a curvature dip is only counted where peak |k| exceeds a 1000 px radius **and**
+the connector departs from its chord by at least half a pixel. Near opposition
+the geometry is sub-pixel by design, and measuring a dip in floating-point noise
+otherwise yields 100% readings from nothing.
 
 The reasoning and the recommendation live in [`docs/pivot-design.md`](../../docs/pivot-design.md).

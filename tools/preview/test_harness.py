@@ -185,6 +185,93 @@ def test_curvature_is_continuous_at_the_pivot() -> None:
     check(worst < 1e-6, f"relative |dk| at the pivot never exceeds {worst:.2e}")
 
 
+def test_arc_ceiling_closed_form() -> None:
+    """cos/(1+sin) must equal min(r) tan(pi/4 - d/4) -- the form a C port would
+    use, since it needs only square roots and has no 0/0 at opposition."""
+    print("arc-apex ceiling closed form")
+    face = G.Face()
+    worst = 0.0
+    for stems in G.STEM_CONFIGS:
+        smaller = face.max_radius * min(stems.hour_inner, stems.minute_inner)
+        for delta in range(0, 181, 3):
+            ctx = R._context_for_delta(float(delta), face, stems)
+            reference = smaller * math.tan(math.radians(45.0 - delta / 4.0))
+            worst = max(worst, abs(ctx.arc_apex_ceiling - reference))
+    check(worst < 1e-9, f"agreement to {worst:.2e} px over all stem configs")
+
+
+def _worst_dip(candidate, face, stems, stride=1):
+    worst = 0.0
+    for hour, minute in G.ALL_TIMES[::stride]:
+        worst = max(worst, R.measure(hour, minute, candidate.rule, face, stems,
+                                     samples=64).curvature_dip)
+    return worst
+
+
+def test_round2_is_unimodal() -> None:
+    """The whole point of round 2: |k| must not dip at the pivot, in any stem
+    configuration -- not just today's."""
+    print("round-2 depth rules keep curvature unimodal (all 720, all stems)")
+    face = G.Face()
+    for key in ("d1-arc-sin", "d2-arc-openness", "d3-arc-p075",
+                "c3-chord-035", "c3o-chord-openness"):
+        candidate = G.CANDIDATES_BY_KEY[key]
+        worst = max(_worst_dip(candidate, face, stems)
+                    for stems in G.STEM_CONFIGS)
+        check(worst <= R.DIP_GATE, f"{key}: worst dip {worst:.1%}")
+
+
+def test_controls_still_flatten() -> None:
+    """The illustrations have to keep illustrating, or the sheets stop making
+    their point."""
+    print("controls flatten, as they are meant to")
+    face = G.Face()
+    for key in ("dc-arc-ceiling", "c1-openness"):
+        worst = _worst_dip(G.CANDIDATES_BY_KEY[key], face, G.DEFAULT_STEMS)
+        check(worst > R.DIP_GATE, f"{key}: worst dip {worst:.1%} (expected)")
+
+
+def test_current_rule_flattens_under_changed_stems() -> None:
+    """C0 is unimodal today only by luck: its depth is pinned to the face radius,
+    so shrinking the stems leaves the pivot past the limit."""
+    print("the current rule flattens once the stems change")
+    face = G.Face()
+    candidate = G.CANDIDATES_BY_KEY["c0-current"]
+    today = _worst_dip(candidate, face, G.STEMS_BY_NAME["current"])
+    shortened = _worst_dip(candidate, face, G.STEMS_BY_NAME["short"])
+    check(today <= R.DIP_GATE, f"unimodal with current stems ({today:.1%})")
+    check(shortened > 0.5, f"flattens badly with short stems ({shortened:.1%})")
+
+
+def test_tilt_does_not_induce_flattening() -> None:
+    """Round 1 only ever varied tilt at unsafe depths. At a safe depth, beta
+    should be free -- which is what makes depth and tilt separable."""
+    print("tilt is free once the depth is inside the limit")
+    face = G.Face()
+    for candidate in G.ROUND2_TILT:
+        worst = _worst_dip(candidate, face, G.DEFAULT_STEMS, stride=3)
+        check(worst <= R.DIP_GATE, f"{candidate.label}: worst dip {worst:.1%}")
+
+
+def test_closed_form_sits_under_the_empirical_limit() -> None:
+    """The depth family must stay under the limit measured from the solver, in
+    the awkward stem configurations too -- not only in the shipped one."""
+    print("D1 stays under the bisected unimodality limit")
+    face = G.Face()
+    for name in ("current", "short", "strong-asym"):
+        stems = G.STEMS_BY_NAME[name]
+        worst_ratio = 0.0
+        for delta in (45.0, 75.0, 105.0, 135.0, 160.0):
+            limit = R.unimodality_limit(delta, face, stems)
+            ctx = R._context_for_delta(delta, face, stems)
+            depth = G.norm(G.sub(G.CANDIDATES_BY_KEY["d1-arc-sin"].rule(ctx),
+                                 ctx.center))
+            if limit > 1e-6:
+                worst_ratio = max(worst_ratio, depth / limit)
+        check(worst_ratio < 1.0,
+              f"{name}: worst depth is {worst_ratio:.0%} of the measured limit")
+
+
 def main() -> int:
     for test in (
         test_stem_configs,
@@ -197,6 +284,12 @@ def main() -> int:
         test_stem_scaling_is_proportional,
         test_swapped_stems_mirror,
         test_curvature_is_continuous_at_the_pivot,
+        test_arc_ceiling_closed_form,
+        test_round2_is_unimodal,
+        test_controls_still_flatten,
+        test_current_rule_flattens_under_changed_stems,
+        test_tilt_does_not_induce_flattening,
+        test_closed_form_sits_under_the_empirical_limit,
     ):
         test()
     print()

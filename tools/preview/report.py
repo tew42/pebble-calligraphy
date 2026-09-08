@@ -32,7 +32,36 @@ DEFAULT_TIMES: tuple[tuple[int, int], ...] = (
 #: unbounded curvature is by design, so tightness metrics skip them.
 OVERLAP_GUARD_DEG = 20.0
 
+#: Round 1 roster followed by round 2, de-duplicated by key.
+def _all_candidates():
+    seen, out = set(), []
+    for candidate in G.ROUND2 + G.CANDIDATES:
+        if candidate.key not in seen:
+            seen.add(candidate.key)
+            out.append(candidate)
+    return tuple(out)
+
+ALL_CANDIDATES = _all_candidates()
+
 SWERVE_GATE_PX = 0.05
+#: A dip deeper than this reads as the curve flattening at the pivot.
+DIP_GATE = 0.02
+
+#: Below this peak |k| the connector is straighter than a 1000 px radius -- ten
+#: times the face. A straight line cannot "flatten at the pivot", and measuring
+#: a dip in floating-point noise produces 100% readings from nothing, so both
+#: the metric and the plots treat such positions as straight.
+STRAIGHT_K = 1e-3
+
+#: A connector whose total departure from its own chord is under half a pixel is
+#: not a shape anyone can see, so a curvature dip in it is not a visible defect.
+#: This matters near opposition, where the geometry is sub-pixel by design.
+STRAIGHT_BOW_PX = 0.5
+
+#: The headroom ratio s / arc_apex_ceiling is only meaningful while the ceiling
+#: is an appreciable length; approaching opposition both terms vanish and the
+#: ratio tends to a limit that says nothing about the shape.
+HEADROOM_MIN_CEILING_PX = 2.0
 CURVE_SAMPLES = 96
 
 
@@ -59,6 +88,13 @@ class Position:
     turn_minute: float       # deg
     peak_k_hour: float
     peak_k_minute: float
+    curvature_dip: float     # depth of an interior |k| minimum, 0 = unimodal
+    peak_at_pivot: bool      # is the single |k| maximum at the pivot?
+    headroom: float          # s / arc_apex_ceiling
+
+    @property
+    def unimodal(self) -> bool:
+        return self.curvature_dip <= DIP_GATE
 
     @property
     def turn_share(self) -> float:
@@ -133,6 +169,33 @@ def _turn_from(vx, vy) -> float:
     return math.degrees(total)
 
 
+def _curvature_dip(k_hour: list[float], k_minute: list[float],
+                   bow: float = float("inf")) -> tuple[float, bool]:
+    """How far |k| dips between its two flanking peaks, and whether the single
+    maximum sits at the pivot.
+
+    0.0 means unimodal -- |k| rises to one peak and falls. A positive value is
+    the "W": the curve has flattened around the pivot, with the tighter bends
+    pushed out to either side. Returned as a fraction of the shallower flanking
+    peak, so it is scale-free.
+    """
+    magnitudes = [abs(v) for v in k_hour] + [abs(v) for v in k_minute[1:]]
+    if max(magnitudes) < STRAIGHT_K or bow < STRAIGHT_BOW_PX:
+        return 0.0, True          # effectively straight: nothing to flatten
+    pivot = len(k_hour) - 1
+    left = max(range(0, pivot + 1), key=lambda i: magnitudes[i])
+    right = max(range(pivot, len(magnitudes)), key=lambda i: magnitudes[i])
+    peak = max(range(len(magnitudes)), key=lambda i: magnitudes[i])
+    at_pivot = abs(peak - pivot) <= max(2, len(magnitudes) // 50)
+    if right <= left:
+        return 0.0, at_pivot
+    trough = min(magnitudes[left:right + 1])
+    shallower = min(magnitudes[left], magnitudes[right])
+    if shallower < 1e-12:
+        return 0.0, at_pivot
+    return 1.0 - trough / shallower, at_pivot
+
+
 def measure(hour: int, minute: int, rule, face: G.Face = G.Face(),
             stems: G.Stems = G.DEFAULT_STEMS,
             samples: int = CURVE_SAMPLES) -> Position:
@@ -168,8 +231,10 @@ def measure(hour: int, minute: int, rule, face: G.Face = G.Face(),
             for px, py in zip(hpx + mpx, hpy + mpy)
         ]
         swerve = min(abs(max(offsets)), abs(min(offsets)))
+        bow = max(abs(max(offsets)), abs(min(offsets)))
     else:
         swerve = 0.0
+        bow = 0.0
 
     centre = cl.context.center
     a, b, p = cl.hour_connector, cl.minute_connector, cl.pivot
@@ -177,6 +242,10 @@ def measure(hour: int, minute: int, rule, face: G.Face = G.Face(),
     s2 = G.cross(G.sub(centre, b), G.sub(p, b))
     s3 = G.cross(G.sub(a, centre), G.sub(p, centre))
     inside = (min(s1, s2, s3) >= -1e-6) or (max(s1, s2, s3) <= 1e-6)
+
+    dip, at_pivot = _curvature_dip(k_hour, k_minute, bow)
+    ceiling = cl.context.arc_apex_ceiling
+    depth = G.norm(G.sub(cl.pivot, centre))
 
     return Position(
         delta=G.separation_degrees(hour, minute),
@@ -191,6 +260,10 @@ def measure(hour: int, minute: int, rule, face: G.Face = G.Face(),
         turn_minute=_turn_from(mvx, mvy),
         peak_k_hour=max(abs(v) for v in k_hour),
         peak_k_minute=max(abs(v) for v in k_minute),
+        curvature_dip=dip,
+        peak_at_pivot=at_pivot,
+        headroom=((depth / ceiling)
+                  if ceiling > HEADROOM_MIN_CEILING_PX else 0.0),
     )
 
 
@@ -211,6 +284,10 @@ class Summary:
     mean_turn_share: float
     worst_turn_share: float
     mean_k_ratio: float
+    worst_dip: float
+    dip_failures: int
+    max_headroom: float
+    off_pivot_peaks: int
 
     @property
     def passes(self) -> bool:
@@ -218,6 +295,7 @@ class Summary:
             self.max_swerve < SWERVE_GATE_PX
             and self.outside_triangle == 0
             and self.solver_fallbacks == 0
+            and self.dip_failures == 0
         )
 
 
@@ -250,6 +328,10 @@ def summarise(candidate: G.Candidate, face: G.Face, stems: G.Stems) -> Summary:
         mean_turn_share=sum(shares) / len(shares),
         worst_turn_share=max(shares, key=lambda v: abs(v - 0.5)),
         mean_k_ratio=(sum(ratios) / len(ratios)) if ratios else 1.0,
+        worst_dip=max(p.curvature_dip for p in positions),
+        dip_failures=sum(1 for p in positions if not p.unimodal),
+        max_headroom=max(p.headroom for p in positions),
+        off_pivot_peaks=sum(1 for p in open_positions if not p.peak_at_pivot),
     )
 
 
@@ -326,7 +408,7 @@ def draw_panel(
 # ---------------------------------------------------------------------------
 
 def sheet_compare(face, stems, times, out_path) -> None:
-    rows = [c for c in G.CANDIDATES if c.key != "c0-current"]
+    rows = [G.CANDIDATES_BY_KEY[key] for key in SHAPE_ROWS]
     reference = G.CANDIDATES_BY_KEY["c0-current"]
 
     pw, ph = face.width * PANEL_SCALE, face.height * PANEL_SCALE
@@ -422,7 +504,7 @@ def draw_zoom_panel(cv, ox, oy, face, stems, hour, minute, main,
 
 
 def sheet_compare_zoom(face, stems, times, out_path) -> None:
-    rows = [c for c in G.CANDIDATES if c.key != "c0-current"]
+    rows = [G.CANDIDATES_BY_KEY[key] for key in SHAPE_ROWS]
     reference = G.CANDIDATES_BY_KEY["c0-current"]
     gap, left, top = 8, 190, 128
     cv = S.Canvas(left + len(times) * (ZOOM_BOX + gap) + 16,
@@ -468,20 +550,20 @@ def sheet_tilt(face, stems, times, out_path) -> None:
     """The beta bracket, zoomed -- at face scale the variants overlap."""
     overlays = tuple(
         (candidate, S.RAMP[i % len(S.RAMP)])
-        for i, candidate in enumerate(G.TILT_SWEEP)
+        for i, candidate in enumerate(G.ROUND2_TILT)
     )
     gap, left, top = 8, 24, 116
     cv = S.Canvas(left + len(times) * (ZOOM_BOX + gap) + 16, top + ZOOM_BOX + 40)
 
-    cv.text(24, 34, "C10 - tilt bracket at fixed depth, centre region at "
+    cv.text(24, 34, "Tilt bracket at D1's depth, centre region at "
             f"{ZOOM_BOX / (2 * ZOOM_HALF_SPAN):.1f}x", size=17, fill=S.LABEL,
             weight="600")
-    cv.text(24, 54, "mu = sin^2(delta/2) throughout; only beta varies. Lower "
-            "beta leans the pull toward the hour stem, higher toward the minute.",
-            size=10, fill=S.DIM)
+    cv.text(24, 54, "D1 depth throughout; only beta varies. Lower beta leans "
+            "the pull toward the hour stem, higher toward the minute. All five "
+            "stay unimodal, so tilt is free.", size=10, fill=S.DIM)
 
     bisector = G.beta_bisector(
-        G.build_centerline(3, 0, G.CANDIDATES_BY_KEY["c1-openness"].rule,
+        G.build_centerline(3, 0, G.CANDIDATES_BY_KEY["d1-arc-sin"].rule,
                            face, stems).context
     )
     for i, (candidate, colour) in enumerate(overlays):
@@ -499,13 +581,13 @@ def sheet_tilt(face, stems, times, out_path) -> None:
         cv.text(x + ZOOM_BOX / 2, top - 8,
                 f"{label_time(hour, minute)}   delta = {delta:.1f}", size=10,
                 fill=S.LABEL, anchor="middle")
-        draw_zoom_panel(cv, x, top, face, stems, hour, minute, G.TILT_SWEEP[0],
+        draw_zoom_panel(cv, x, top, face, stems, hour, minute, G.ROUND2_TILT[0],
                         overlays=overlays, index=900 + column)
     cv.write(out_path)
 
 
 def sheet_stems(face, times, out_path,
-                candidate_key: str = "c1-openness") -> None:
+                candidate_key: str = "d1-arc-sin") -> None:
     candidate = G.CANDIDATES_BY_KEY[candidate_key]
     reference = G.CANDIDATES_BY_KEY["c0-current"]
     hour, minute = (3, 0)
@@ -565,8 +647,9 @@ def _context_for_delta(delta_deg, face, stems):
 
 
 def sheet_profiles(face, stems, out_path) -> None:
-    shown = [c for c in G.CANDIDATES
-             if c.key not in ("c5-centre", "c1-openness-070")]
+    shown = [c for c in ALL_CANDIDATES
+             if c.key not in ("c5-centre", "c1-openness-070",
+                              "dc-arc-ceiling", "c4-openness-p20")]
     samples = [d * 0.5 for d in range(361)]
     series = []
     for candidate in shown:
@@ -631,7 +714,8 @@ def sheet_profiles(face, stems, out_path) -> None:
 
 
 def sheet_locus(face, stems, out_path) -> None:
-    shown = [c for c in G.CANDIDATES if c.role in ("reference", "contender")]
+    shown = [c for c in ALL_CANDIDATES
+             if c.role in ("reference", "contender")]
     box = 168
     zoom = 2.6
     gap, left, top, per_row = 14, 24, 104, 5
@@ -674,6 +758,287 @@ def sheet_locus(face, stems, out_path) -> None:
     cv.write(out_path)
 
 
+
+# ---------------------------------------------------------------------------
+# Round 2: curvature profiles and the unimodality ceiling
+# ---------------------------------------------------------------------------
+
+ROUND2_ROWS = ("d1-arc-sin", "d2-arc-openness", "d3-arc-p075", "c3-chord-035",
+               "c3o-chord-openness", "c0-current", "dc-arc-ceiling",
+               "c1-openness")
+
+#: The same roster with C0 removed -- it is the reference underlay in the shape
+#: sheets rather than a row of its own.
+SHAPE_ROWS = tuple(key for key in ROUND2_ROWS if key != "c0-current")
+
+PROFILE_W, PROFILE_H = 176.0, 118.0
+
+
+def curvature_profile(cl, samples: int = 200):
+    """|k| against normalized arc length across the connector, and the arc
+    position of the pivot."""
+    a = _sample_half(cl.hour_connector, cl.pivot, cl.hour_derivative,
+                     cl.guide_derivative, cl.hour_span, samples)
+    b = _sample_half(cl.pivot, cl.minute_connector, cl.guide_derivative,
+                     cl.minute_derivative, cl.minute_span, samples)
+    magnitudes = ([abs(v) for v in _curvature_list(a[2], a[3], a[4], a[5])]
+                  + [abs(v) for v in _curvature_list(b[2], b[3], b[4], b[5])][1:])
+    # arc length, so the horizontal axis is geometric rather than parametric
+    xs = [0.0]
+    px = a[0] + b[0][1:]
+    py = a[1] + b[1][1:]
+    for i in range(1, len(px)):
+        xs.append(xs[-1] + math.hypot(px[i] - px[i - 1], py[i] - py[i - 1]))
+    total = xs[-1] or 1.0
+    pivot_at = xs[samples] / total
+    return [x / total for x in xs], magnitudes, pivot_at
+
+
+def draw_profile_cell(cv, ox, oy, face, stems, hour, minute, candidate) -> None:
+    cl = G.build_centerline(hour, minute, candidate.rule, face, stems)
+    xs, ks, pivot_at = curvature_profile(cl)
+    position = measure(hour, minute, candidate.rule, face, stems)
+
+    cv.rect(ox, oy, PROFILE_W, PROFILE_H, fill=S.PANEL, stroke="#242a31",
+            stroke_width=0.8, rx=3)
+    inset_l, inset_r, inset_t, inset_b = 6.0, 6.0, 20.0, 16.0
+    plot_w = PROFILE_W - inset_l - inset_r
+    plot_h = PROFILE_H - inset_t - inset_b
+    peak_k = max(ks)
+
+    # Below this the line is straighter than the display can meaningfully show
+    # (radius > 10x the face). Autoscaling such a cell turns floating-point
+    # noise into a dramatic and entirely fictional shape, so say "straight".
+    if peak_k < STRAIGHT_K:
+        cv.rect(ox, oy, PROFILE_W, PROFILE_H, fill=S.PANEL, stroke="#242a31",
+                stroke_width=0.8, rx=3)
+        mid = oy + inset_t + plot_h * 0.5
+        cv.line(ox + inset_l, mid, ox + inset_l + plot_w, mid, stroke=S.DIM,
+                stroke_width=1.2, opacity=0.85)
+        cv.text(ox + 5, oy + 13, "straight", size=8, fill=S.LABEL, weight="600")
+        cv.text(ox + PROFILE_W - 5, oy + 13, f"head {position.headroom:.2f}",
+                size=8, anchor="end", fill=S.DIM)
+        cv.text(ox + 5, oy + PROFILE_H - 5,
+                f"s={position.depth:.1f}  peak |k| < {STRAIGHT_K:g}", size=7,
+                fill=S.DIM)
+        return
+    top = peak_k
+
+    def X(value):
+        return ox + inset_l + value * plot_w
+
+    def Y(value):
+        return oy + inset_t + plot_h - (value / top) * plot_h
+
+    # pivot rule
+    cv.line(X(pivot_at), oy + inset_t - 3, X(pivot_at), oy + inset_t + plot_h,
+            stroke=S.PIVOT, stroke_width=0.8, opacity=0.75, dash="2 2")
+    cv.line(ox + inset_l, Y(0), ox + inset_l + plot_w, Y(0), stroke=S.GUIDE,
+            stroke_width=0.5, opacity=0.8)
+
+    colour = S.REFERENCE if candidate.role != "contender" else S.INK
+    cv.polyline([(X(x), Y(k)) for x, k in zip(xs, ks)], stroke=colour,
+                stroke_width=1.4)
+
+    verdict = "unimodal" if position.unimodal else f"W {position.curvature_dip:.0%}"
+    cv.text(ox + 5, oy + 13, verdict, size=8,
+            fill=S.LABEL if position.unimodal else "#f95d6a", weight="600")
+    cv.text(ox + PROFILE_W - 5, oy + 13,
+            f"head {position.headroom:.2f}", size=8, anchor="end",
+            fill=S.DIM if position.headroom <= 1.0 else "#f95d6a")
+    cv.text(ox + 5, oy + PROFILE_H - 5,
+            f"s={position.depth:.1f}  peak |k|={top:.3f}", size=7, fill=S.DIM)
+
+
+def sheet_curvature(face, stems, times, out_path) -> None:
+    rows = [G.CANDIDATES_BY_KEY[key] for key in ROUND2_ROWS]
+    gap, left, top = 8, 196, 116
+    cv = S.Canvas(left + len(times) * (PROFILE_W + gap) + 16,
+                  top + len(rows) * (PROFILE_H + gap) + 30)
+
+    cv.text(24, 34, "Curvature along the connector", size=17, fill=S.LABEL,
+            weight="600")
+    cv.text(24, 54, "|k| against normalized arc length. Blue rule = the pivot. "
+            "The requirement is one peak at the pivot, not a dip between two.",
+            size=10, fill=S.DIM)
+    cv.text(24, 72, "A 'W' here is the curve flattening around the pivot. "
+            "'head' is s / arc-apex ceiling -- above 1.0 predicts the dip.",
+            size=10, fill=S.DIM)
+    cv.text(24, 90, f"{face.name}  |  stems: {stems.describe()}", size=10,
+            fill=S.DIM)
+
+    for column, (hour, minute) in enumerate(times):
+        x = left + column * (PROFILE_W + gap)
+        cv.text(x + PROFILE_W / 2, top - 8,
+                f"{label_time(hour, minute)}   delta = "
+                f"{G.separation_degrees(hour, minute):.1f}", size=10,
+                fill=S.LABEL, anchor="middle")
+
+    for row, candidate in enumerate(rows):
+        y = top + row * (PROFILE_H + gap)
+        cv.text(24, y + 18, candidate.label, size=11, fill=S.LABEL, weight="600")
+        cv.text(24, y + 32, candidate.formula, size=8, fill=S.DIM)
+        if candidate.role != "contender":
+            cv.text(24, y + 46, f"[{candidate.role}]", size=8, fill=S.REFERENCE)
+        for column, (hour, minute) in enumerate(times):
+            draw_profile_cell(cv, left + column * (PROFILE_W + gap), y, face,
+                              stems, hour, minute, candidate)
+    cv.write(out_path)
+
+
+# -- the empirical unimodality ceiling ------------------------------------
+
+_TIME_BY_DELTA = sorted((G.separation_degrees(h, m), h, m)
+                        for h in range(12) for m in range(60))
+
+
+def time_nearest_delta(delta: float) -> tuple[int, int]:
+    _, hour, minute = min(_TIME_BY_DELTA, key=lambda row: abs(row[0] - delta))
+    return hour, minute
+
+
+def unimodality_limit(delta: float, face: G.Face, stems: G.Stems,
+                      coarse: int = 48, iterations: int = 22) -> float:
+    """Smallest pivot depth on the bisector at which |k| starts to flatten.
+
+    Recomputes the constraint from the actual solver rather than from idealized
+    circle geometry, so the closed form can be checked rather than trusted.
+
+    The search is bounded by the chord ceiling -- beyond it the pivot leaves the
+    tangent triangle and the shape is no longer the thing being measured. It
+    coarse-scans upward for the *first* onset before bisecting, because
+    flattening is not monotone in depth: past the triangle the profile changes
+    character and the dip measure stops detecting it.
+    """
+    hour, minute = time_nearest_delta(delta)
+    top = _context_for_delta(delta, face, stems).chord_ceiling
+    if top < 1e-3:
+        return 0.0
+
+    def flattens(depth: float) -> bool:
+        rule = G.along_bisector(lambda ctx, _length, d=depth: d)
+        return not measure(hour, minute, rule, face, stems, samples=64).unimodal
+
+    step = top / coarse
+    low = 0.0
+    found = None
+    for i in range(1, coarse + 1):
+        probe = i * step
+        if flattens(probe):
+            found = probe
+            break
+        low = probe
+    if found is None:
+        return top
+
+    high = found
+    for _ in range(iterations):
+        middle = 0.5 * (low + high)
+        if flattens(middle):
+            high = middle
+        else:
+            low = middle
+    return 0.5 * (low + high)
+
+
+def ceiling_table(face, stems, step: float = 5.0) -> list[tuple[float, float]]:
+    deltas = [step * i for i in range(1, int(180.0 / step))]
+    return [(d, unimodality_limit(d, face, stems)) for d in deltas]
+
+
+def sheet_ceiling(face, stems, out_path, cache_path=None) -> None:
+    empirical = ceiling_table(face, stems)
+    if cache_path:
+        import json
+        with open(cache_path, "w", encoding="utf-8") as handle:
+            json.dump({"face": face.name, "stems": stems.name,
+                       "limit": empirical}, handle, indent=1)
+
+    samples = [d * 1.0 for d in range(0, 181)]
+    shown = [G.CANDIDATES_BY_KEY[key] for key in
+             ("d1-arc-sin", "d2-arc-openness", "c3-chord-035",
+              "c3o-chord-openness", "c0-current", "c1-openness")]
+    series = []
+    for candidate in shown:
+        values = []
+        for delta in samples:
+            ctx = _context_for_delta(delta, face, stems)
+            values.append(G.norm(G.sub(candidate.rule(ctx), ctx.center)))
+        series.append((candidate.label, values, candidate.role))
+
+    arc = [_context_for_delta(d, face, stems).arc_apex_ceiling for d in samples]
+    chord = [_context_for_delta(d, face, stems).chord_ceiling for d in samples]
+
+    peak = max(max(chord), max(v for _, vs, _ in series for v in vs)) * 1.06
+    plot_w, plot_h, left, top = 720, 400, 78, 122
+    cv = S.Canvas(left + plot_w + 330, top + plot_h + 76)
+
+    cv.text(24, 34, "Where the curvature starts to flatten", size=17,
+            fill=S.LABEL, weight="600")
+    cv.text(24, 54, "Grey band = pivot depths that keep |k| unimodal, bisected "
+            "from the solver at 5 deg steps. Cross into the band above it and "
+            "the curve flattens at the pivot.", size=10, fill=S.DIM)
+    cv.text(24, 72, "The round-1 chord ceiling is ~1.8x the real limit where it "
+            "matters, which is why C1 flattened. min(r) tan(45-d/4) tracks it.",
+            size=10, fill=S.DIM)
+    cv.text(24, 90, f"{face.name}, R = {face.max_radius:.0f} px  |  stems: "
+            f"{stems.describe()}", size=10, fill=S.DIM)
+
+    def X(delta):
+        return left + delta / 180.0 * plot_w
+
+    def Y(value):
+        return top + plot_h - value / peak * plot_h
+
+    cv.rect(left, top, plot_w, plot_h, fill="#0d0f12", stroke="#242a31",
+            stroke_width=0.8)
+    for delta in range(0, 181, 15):
+        cv.line(X(delta), top, X(delta), top + plot_h, stroke=S.GUIDE,
+                stroke_width=0.4, opacity=0.45)
+        cv.text(X(delta), top + plot_h + 16, str(delta), size=9, fill=S.DIM,
+                anchor="middle")
+    for value in range(0, int(peak) + 1, 5):
+        cv.line(left, Y(value), left + plot_w, Y(value), stroke=S.GUIDE,
+                stroke_width=0.4, opacity=0.45)
+        cv.text(left - 8, Y(value) + 3, str(value), size=9, fill=S.DIM,
+                anchor="end")
+    cv.text(left + plot_w / 2, top + plot_h + 38,
+            "angle between the hands, delta (deg)", size=10, fill=S.LABEL,
+            anchor="middle")
+    cv.text(left - 60, top - 12, "s (px)", size=10, fill=S.LABEL)
+
+    # the unimodal region, as a filled band
+    band = ([(X(d), Y(v)) for d, v in empirical]
+            + [(X(empirical[-1][0]), Y(0)), (X(empirical[0][0]), Y(0))])
+    cv.polyline(band, stroke="none", fill="#2a3340", opacity=0.55, close=True)
+    cv.polyline([(X(d), Y(v)) for d, v in empirical], stroke="#8fa3bb",
+                stroke_width=1.8)
+
+    cv.polyline([(X(d), Y(v)) for d, v in zip(samples, arc)], stroke="#4ade80",
+                stroke_width=2.0, dash="5 3")
+    cv.polyline([(X(d), Y(v)) for d, v in zip(samples, chord)],
+                stroke="#a78bfa", stroke_width=1.4, dash="2 4")
+
+    legend = [("empirical unimodality limit", "#8fa3bb", 1.8, None),
+              ("min(r) tan(45-d/4)  (arc apex)", "#4ade80", 2.0, "5 3"),
+              ("H cos(d/2)  (round-1 chord ceiling)", "#a78bfa", 1.4, "2 4")]
+    palette = ("#ffffff", "#4fc3f7", "#f4d35e", "#f472b6", "#ff8a3d", "#f95d6a")
+    for i, (label, values, role) in enumerate(series):
+        colour = palette[i % len(palette)]
+        dash = "4 3" if role != "contender" else None
+        cv.polyline([(X(d), Y(v)) for d, v in zip(samples, values)],
+                    stroke=colour, stroke_width=1.6, dash=dash)
+        best = max(range(len(values)), key=lambda k: values[k])
+        legend.append((f"{label}  ({values[best]:.1f} @ {samples[best]:.0f})",
+                       colour, 1.6, dash))
+    for i, (label, colour, width, dash) in enumerate(legend):
+        y = top + 16 + i * 18
+        cv.line(left + plot_w + 16, y - 3, left + plot_w + 36, y - 3,
+                stroke=colour, stroke_width=width, dash=dash)
+        cv.text(left + plot_w + 42, y, label, size=9, fill=S.LABEL)
+    cv.write(out_path)
+
+
 # ---------------------------------------------------------------------------
 # Metrics report
 # ---------------------------------------------------------------------------
@@ -706,6 +1071,15 @@ def write_metrics(face, out_path) -> list[Summary]:
         "  0.500 is symmetric. Mean over the 720, then the worst case.",
         "- **k_h/k_m** - mean ratio of peak curvature between the two halves.",
         "  Above 1 means the hour half turns tighter.",
+        "- **dip** - worst interior dip in |k|, as a fraction of the flanking",
+        "  peaks. 0 is unimodal; a positive value is the curve flattening at the",
+        f"  pivot. **fail** counts positions dipping more than {DIP_GATE:.0%}.",
+        "- **head** - worst s / arc-apex ceiling, over positions where the",
+        f"  ceiling exceeds {HEADROOM_MIN_CEILING_PX:.0f} px. Crossing ~1.0 is what",
+        "  predicts the dip, which is the evidence that the arc apex is the right",
+        "  length scale. Note the D family reports ~1.00 because its nu tends to 1",
+        "  as delta approaches 180, where the ceiling and the geometry are both",
+        "  sub-pixel; through the mid range its headroom is ~0.85.",
         "- **out** / **fb** - pivots outside the tangent triangle / solver fallbacks.",
         "",
     ]
@@ -727,7 +1101,7 @@ def write_metrics(face, out_path) -> list[Summary]:
         "perp < 0.5 px |",
         "|---|---:|---:|---:|---:|:--:|",
     ]
-    for candidate in G.CANDIDATES:
+    for candidate in ALL_CANDIDATES:
         row = []
         for hour, minute in ((6, 0), (3, 49)):
             cl = G.build_centerline(hour, minute, candidate.rule, face,
@@ -747,21 +1121,21 @@ def write_metrics(face, out_path) -> list[Summary]:
         lines += [
             f"## stems: `{stems.name}` - {stems.describe()}",
             "",
-            "| candidate | swerve | k flips | joint dk | min R | minR90 | s max "
-            "| @ delta | turn share | worst | k_h/k_m | out | fb | gate |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:--:|",
+            "| candidate | dip | fail | head | swerve | minR90 | s max | @ delta "
+            "| turn share | k_h/k_m | out | fb | gate |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:--:|",
         ]
-        for candidate in G.CANDIDATES:
+        for candidate in ALL_CANDIDATES:
             s = summarise(candidate, face, stems)
             everything.append(s)
             lines.append(
-                f"| {candidate.label} | {s.max_swerve:.4f} | "
-                f"{s.sign_change_positions} | {s.max_joint_jump:.2e} | "
-                f"{s.min_radius:.2f} | {s.min_radius_open:.2f} | "
+                f"| {candidate.label} | {s.worst_dip * 100:.0f}% | "
+                f"{s.dip_failures} | {s.max_headroom:.2f} | "
+                f"{s.max_swerve:.4f} | {s.min_radius_open:.1f} | "
                 f"{s.max_depth:.1f} | {s.peak_delta:.0f} | "
-                f"{s.mean_turn_share:.3f} | {s.worst_turn_share:.3f} | "
-                f"{s.mean_k_ratio:.2f} | {s.outside_triangle} | "
-                f"{s.solver_fallbacks} | {'pass' if s.passes else 'FAIL'} |"
+                f"{s.mean_turn_share:.3f} | {s.mean_k_ratio:.2f} | "
+                f"{s.outside_triangle} | {s.solver_fallbacks} | "
+                f"{'pass' if s.passes else 'FAIL'} |"
             )
         lines.append("")
 
@@ -784,6 +1158,8 @@ def main() -> None:
     parser.add_argument("--all", action="store_true", help="every output")
     parser.add_argument("--grid", action="store_true")
     parser.add_argument("--zoom", action="store_true")
+    parser.add_argument("--curvature", action="store_true")
+    parser.add_argument("--ceiling", action="store_true")
     parser.add_argument("--tilt", action="store_true")
     parser.add_argument("--stems", action="store_true")
     parser.add_argument("--profiles", action="store_true")
@@ -796,8 +1172,9 @@ def main() -> None:
     parser.add_argument("--out", default=OUT_DIR)
     args = parser.parse_args()
 
-    if not any((args.all, args.grid, args.zoom, args.tilt, args.stems,
-                args.profiles, args.locus, args.metrics)):
+    if not any((args.all, args.grid, args.zoom, args.curvature,
+                args.ceiling, args.tilt, args.stems, args.profiles,
+                args.locus, args.metrics)):
         args.all = True
 
     face = G.Face()
@@ -815,6 +1192,12 @@ def main() -> None:
     if args.all or args.zoom:
         sheet_compare_zoom(face, stems, times, path("compare-zoom.svg"))
         print("wrote compare-zoom.svg")
+    if args.all or args.curvature:
+        sheet_curvature(face, stems, times, path("curvature-profiles.svg"))
+        print("wrote curvature-profiles.svg")
+    if args.all or args.ceiling:
+        sheet_ceiling(face, stems, path("ceiling.svg"), path("ceiling.json"))
+        print("wrote ceiling.svg, ceiling.json")
     if args.all or args.tilt:
         sheet_tilt(face, stems, times, path("tilt-grid.svg"))
         print("wrote tilt-grid.svg")

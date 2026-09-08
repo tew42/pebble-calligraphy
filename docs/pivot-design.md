@@ -7,6 +7,10 @@ the width profile, or rasterization.
 Explored with `tools/preview/`; every number below comes from a sweep of all 720
 clock positions, most of them across six stem geometries.
 
+> Written in two rounds, and kept that way because the second round overturns
+> part of the first. **The current recommendation is D1, in section 11.**
+> Sections 1-3 still stand; the round-1 recommendation in section 6 does not.
+
 ## 1. What is wrong with the current rule
 
 `calculate_pivot_point` (`src/c/main.c:419`) offsets the pivot from the watch
@@ -183,7 +187,7 @@ Reading the table:
   round middle starts to blur the two hand directions the design wants to keep
   clearly defined. That is a taste call the sheets exist to settle.
 
-## 6. Recommendation
+## 6. Recommendation (superseded — see section 11)
 
 **Depth: `mu = sin^2(d/2)`. Tilt: `beta = r_h/(r_h + r_m)`.** That is C1, whose
 closed form on the bisector is
@@ -229,3 +233,150 @@ remain arbitrary and asymmetric; this work makes the pivot rule **indifferent**
 to them rather than picking them. Also untouched: the minimum-bending tangent
 solve (deliberately -- see finding 1), the width profile, and everything
 downstream of `build_stroke_polygon`.
+
+---
+
+# Round 2: unimodal curvature
+
+Round 1 recommended C1 and bounded it with the tangent-triangle ceiling. Visual
+review found a failure mode neither of us had in the design space, and it
+invalidates that bound.
+
+## 8. The constraint
+
+At near-opposition the curvature along the connector can follow a **W**: the
+curve *flattens around the pivot*, with the tighter bends pushed out to either
+side. The requirement is that **|k| be unimodal** — rising to a single peak at
+the pivot and falling, never dipping in the middle.
+
+Measuring the dip as a fraction of the flanking peaks, at 10:10 (d = 115):
+
+| flattens | | unimodal | |
+|---|---:|---|---:|
+| C4 openness^0.5 | 100.0% | C0 current | 0.0% |
+| C2 branch clearance | 99.9% | C1 openness (0.70) | 0.0% |
+| C7 chord midpoint | 93.5% | C3 chord fraction | 0.0% |
+| C1 openness x ceiling | 92.8% | C4 openness^2 | 0.0% |
+| C8 hand-length tilt | 92.8% | C5 always centre | 0.0% |
+| C9 perpendicular foot | 92.3% | | |
+
+Every flattener sits at s >= 18.7 px there; every unimodal one at s <= 13.3 px.
+It is a **depth** constraint, and `tools/preview/test_harness.py` confirms tilt
+is free once the depth is inside the limit — 0% dip for every `beta` from 0.30
+to 0.70 — so depth and tilt remain cleanly separable.
+
+## 9. The ceiling round 1 used was the wrong one
+
+The tangent-triangle bound `H cos(d/2)` is correct for monotone turning but
+roughly **1.8x** the unimodality limit where it matters, so it never bound
+anything. Bisecting the real limit out of the solver:
+
+| d | measured limit | round-1 chord ceiling | `min(r) tan(45-d/4)` |
+|---:|---:|---:|---:|
+| 45 | 30.43 | 45.35 | 30.07 |
+| 75 | 22.71 | 38.95 | 22.19 |
+| 105 | 15.75 | 29.88 | 15.28 |
+| 135 | 10.24 | 18.79 | 8.95 |
+| 165 | 3.37 | 6.41 | 2.95 |
+
+The binding scale is the **constant-curvature apex**. A circle tangent to a
+stem's radial line at its inner end and centred on the bisector crosses the
+bisector at `r tan(pi/4 - d/4)`; tangency to both radials at unequal radii is
+impossible, so the **shorter** stem gives the smaller apex and governs:
+
+```
+s_arc = min(r_h, r_m) * tan(pi/4 - d/4)
+      = min(r_h, r_m) * cos(d/2) / (1 + sin(d/2))
+```
+
+The second form is algebraically identical, has no 0/0 at opposition, and needs
+only square roots — so a C port uses the existing `square_root_float` and never
+touches `atan`. It tracks the measured limit to within 1-3% across the range
+(slightly above below d ~ 30, slightly below above it), and like `H` it is
+symmetric in the stem radii and homogeneous of degree 1 in them, so every
+stem-stability property from round 1 survives.
+
+**The headroom ratio `s / s_arc` is what predicts the dip.** In the metrics
+table every candidate that passes the unimodality gate has worst headroom
+<= 1.00 and every one that fails has >= 1.51. That the threshold lands on 1.0
+is the evidence that this is the right length scale, rather than merely a
+convenient fit.
+
+The ceiling is not, however, a safe *bound* on its own: used at full strength
+(`nu = 1`, candidate DC) it flattens 95%. It sets the right d-dependence; the
+margin has to come from a factor below 1, and unimodality has to be verified
+numerically. `report.py --ceiling` re-bisects the limit so the closed form can
+be re-checked rather than trusted, including under changed stems.
+
+## 10. Two findings that settle the reparametrization
+
+**The current rule avoids flattening only by luck.** Worst dip over 720
+positions:
+
+| rule | current | symmetric | swapped | strong-asym | short | long |
+|---|---:|---:|---:|---:|---:|---:|
+| C0 current | 0% | 0% | 0% | 22% | **99%** | 0% |
+| D1 proposed | 0% | 0% | 0% | 0% | 0% | 0% |
+| C3 chord fraction | 0% | 0% | 0% | 0% | 0% | 0% |
+
+C0's depth is pinned at 13.1 px whatever the stems do, so shrinking them
+(`short`, where the apex ceiling falls to ~10 px) leaves the pivot far past the
+limit. **The face-radius anchoring causes both failures** — stem-instability and
+flattening — from one root cause.
+
+**Scaling C1 down does not fix it.** C1 x 0.70 is unimodal at 10:10 only because
+its headroom there is *exactly* 1.00. It crosses at d = 117.5 and reaches a 91%
+dip by d = 151. The *shape* of the depth function has to change, not just its
+amplitude — which is precisely what swapping the chord ceiling for the arc apex
+does.
+
+## 11. Revised recommendation
+
+**`s = min(r_h, r_m) * cos(d/2) / (1 + sin(d/2)) * sin(d/2)`**, tilt on the
+bisector (`beta = r_h/(r_h + r_m)`). This is **D1**.
+
+It supersedes the round-1 recommendation of C1, which fails the unimodality
+gate. What carries over unchanged: zero arbitrary constants, homogeneity of
+degree 1 in the stem radii, symmetry in them, `s(0) = 0` pinning the centre at
+overlap, and containment in the tangent triangle. What is new is that the depth
+is measured against the ceiling that actually binds.
+
+A further point in its favour, found while checking it: the hand-tuned C0 profile
+*is* D1, to within 1-4% out to d = 105.
+
+| d | 15 | 30 | 45 | 60 | 75 | 90 | 105 | 120 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| C0 | 5.1 | 8.8 | 11.3 | 12.7 | 13.1 | 12.6 | 11.4 | 9.6 |
+| D1 | 5.2 | 8.9 | 11.5 | 13.0 | 13.5 | 13.2 | 12.1 | 10.4 |
+
+So D1 is not a new look — it is the current look, restated without the four
+constants and made to follow the stems. That also means adopting it is visually
+low-risk.
+
+Open choices, all passing the gate:
+
+- **D2** (`nu = sin^2(d/2)`, peak 9.6 px @ 103) and **D3** (`nu = sin^1.5(d/2)`,
+  peak 11.1 px @ 92) are shallower and hug the centre longer. D3 is the middle
+  option if D1 reads slightly full.
+- **C3** (`0.35 dist(C, AB)`, peak 15.7 px @ 33) is fully reinstated. My round-1
+  dismissal was wrong on the criterion that now matters: it is unimodal in every
+  stem configuration, and its depth *is* stem-covariant, because `dist(C, AB)`
+  is also homogeneous of degree 1 in the stem radii. It has the deepest peak of
+  any passing candidate and the most front-loaded profile — it reaches 14 px by
+  d = 15 and then decays. Whether that early ramp reads as eager or as decisive
+  is a judgement the sheets exist to support, not something the metrics settle.
+- **C3o** (`0.30 dist(C, AB) sin(d/2)`, peak 7.3 px @ 90) is the same idea with
+  the ramp softened. Note the coefficient: at 0.35 its worst headroom is 0.98,
+  on the threshold with nothing left for a stem change, so it is set to 0.30 to
+  give it D1's margin.
+
+## 12. What the round-2 sheets show
+
+- `curvature-profiles.svg` — |k| against arc length, pivot marked, dip and
+  headroom annotated per cell. A W is immediately visible. Positions where the
+  connector departs from its chord by under half a pixel are drawn flat and
+  labelled `straight`: autoscaling those turns floating-point noise into a
+  dramatic and entirely fictional shape.
+- `ceiling.svg` — the bisected unimodal region as a band, the closed form on its
+  edge, the round-1 chord ceiling far above it, and every candidate's `s(d)`.
+  C1 visibly leaves the band between d = 95 and 135.

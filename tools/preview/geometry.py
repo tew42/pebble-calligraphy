@@ -440,6 +440,37 @@ class PivotContext:
             return 0.0
         return 2.0 * self.hour_inner * self.minute_inner / total
 
+    @property
+    def chord_ceiling(self) -> float:
+        """Where the bisector meets chord AB: H cos(d/2).
+
+        The tangent-triangle bound.  Correct for monotone turning, but far too
+        permissive to prevent the curvature from flattening at the pivot -- see
+        arc_apex_ceiling, which is the binding one.
+        """
+        return self.harmonic_inner * self.half_cos
+
+    @property
+    def arc_apex_ceiling(self) -> float:
+        """The constant-curvature apex: min(r_h, r_m) * tan(pi/4 - d/4).
+
+        The circle tangent to a stem's radial line at its inner end and centred
+        on the bisector crosses the bisector at r * tan(pi/4 - d/4).  Tangency
+        to both radials at unequal radii is impossible, so the *shorter* stem
+        gives the smaller apex and therefore governs.
+
+        Written as cos/(1 + sin) rather than (1 - sin)/cos: algebraically
+        identical, but with no 0/0 at opposition, and it needs only square
+        roots -- so a C port can use square_root_float() and skip atan.
+        """
+        return (min(self.hour_inner, self.minute_inner) * self.half_cos
+                / (1.0 + self.half_sin))
+
+    @property
+    def half_sin(self) -> float:
+        """sin(d/2)."""
+        return math.sqrt(self.half_sin_squared)
+
 
 PivotRule = Callable[[PivotContext], Vec]
 
@@ -486,6 +517,26 @@ def depth_tilt_family(
         return add(ctx.center, pull)
 
     return rule
+
+
+def mu_for_bisector_depth(
+    depth: Callable[[PivotContext], float],
+) -> Callable[[PivotContext], float]:
+    """Express a target *depth along the bisector* as the family's `mu`.
+
+    Lets a depth rule be combined with any tilt: on the bisector the family
+    reaches mu * H * cos(d/2), so mu = depth / (H cos(d/2)).  Both H cos(d/2)
+    and every depth rule here vanish together at opposition, and the ratio stays
+    finite, so this is well behaved throughout.
+    """
+
+    def mu(ctx: PivotContext) -> float:
+        ceiling = ctx.chord_ceiling
+        if ceiling < VECTOR_EPSILON:
+            return 0.0
+        return depth(ctx) / ceiling
+
+    return mu
 
 
 # -- depth (mu) ------------------------------------------------------------
@@ -560,6 +611,34 @@ def scaled(rule: PivotRule, factor: float) -> PivotRule:
     return wrapped
 
 
+# -- round 2: depths measured against the arc-apex ceiling ----------------
+
+def arc_depth(nu: Callable[[PivotContext], float]) -> Callable[[PivotContext], float]:
+    """nu(d) * arc_apex_ceiling -- the round-2 depth family.
+
+    nu must stay below 1: at full strength the ceiling itself flattens the
+    curvature at the pivot (measured 91-95% dip), so it sets the right
+    d-dependence but is not a safe bound on its own.
+    """
+    return lambda ctx: nu(ctx) * ctx.arc_apex_ceiling
+
+
+def nu_half_sin(ctx: PivotContext) -> float:
+    return ctx.half_sin
+
+
+def nu_openness(ctx: PivotContext) -> float:
+    return ctx.half_sin_squared
+
+
+def nu_openness_power(power: float) -> Callable[[PivotContext], float]:
+    return lambda ctx: ctx.half_sin_squared ** power
+
+
+def nu_one(ctx: PivotContext) -> float:
+    return 1.0
+
+
 @dataclass(frozen=True)
 class Candidate:
     key: str
@@ -623,7 +702,70 @@ CANDIDATES: tuple[Candidate, ...] = (
     ),
 )
 
-CANDIDATES_BY_KEY = {candidate.key: candidate for candidate in CANDIDATES}
+#: Round 2.  Depth is measured against the arc-apex ceiling rather than the
+#: chord, which is what keeps the curvature unimodal.
+ROUND2: tuple[Candidate, ...] = (
+    Candidate(
+        "d1-arc-sin", "D1 arc x sin(d/2)",
+        "nu=sin(d/2) x min(r) tan(45-d/4)",
+        depth_tilt_family(mu_for_bisector_depth(arc_depth(nu_half_sin)),
+                          beta_bisector),
+    ),
+    Candidate(
+        "d2-arc-openness", "D2 arc x openness",
+        "nu=sin^2(d/2) x min(r) tan(45-d/4)",
+        depth_tilt_family(mu_for_bisector_depth(arc_depth(nu_openness)),
+                          beta_bisector),
+    ),
+    Candidate(
+        "d3-arc-p075", "D3 arc x openness^0.75",
+        "nu=sin^1.5(d/2) x min(r) tan(45-d/4)",
+        depth_tilt_family(
+            mu_for_bisector_depth(arc_depth(nu_openness_power(0.75))),
+            beta_bisector),
+    ),
+    Candidate(
+        "dc-arc-ceiling", "DC the ceiling itself", "nu=1 -- flattens, by design",
+        depth_tilt_family(mu_for_bisector_depth(arc_depth(nu_one)),
+                          beta_bisector),
+        role="illustration",
+    ),
+    Candidate(
+        "c3-chord-035", "C3 chord fraction", "0.35 * dist(C, line AB)",
+        along_bisector(lambda ctx, _l: 0.35 * _chord_distance(ctx)),
+    ),
+    Candidate(
+        "c3o-chord-openness", "C3o chord x sin(d/2)",
+        "0.30 * dist(C, line AB) * sin(d/2)",
+        # 0.30 rather than 0.35: at 0.35 the worst headroom is 0.98, right on
+        # the flattening threshold, which leaves nothing for a stem change.
+        # 0.30 gives the same 0.84 margin as D1.
+        along_bisector(lambda ctx, _l: 0.30 * _chord_distance(ctx) * ctx.half_sin),
+    ),
+    Candidate(
+        "c0-current", "C0 current", "0.15R * shape(sin d) * sqrt(cos(d/2))",
+        along_bisector(_current_depth), role="reference",
+    ),
+    Candidate(
+        "c1-openness", "C1 round-1 lead", "mu=sin^2(d/2) vs the chord ceiling",
+        depth_tilt_family(mu_openness, beta_bisector), role="illustration",
+    ),
+)
+
+#: D1 with the tilt swept, to confirm beta does not induce flattening once the
+#: depth is inside the limit.
+ROUND2_TILT: tuple[Candidate, ...] = tuple(
+    Candidate(
+        f"d1-beta-{int(value * 100):03d}", f"beta = {value:.2f}",
+        f"D1 depth, beta={value:.2f}",
+        depth_tilt_family(mu_for_bisector_depth(arc_depth(nu_half_sin)),
+                          beta_fixed(value)),
+    )
+    for value in (0.30, 0.40, 0.50, 0.60, 0.70)
+)
+
+CANDIDATES_BY_KEY = {candidate.key: candidate
+                     for candidate in CANDIDATES + ROUND2}
 
 #: C10 -- the tilt bracket, same depth, beta swept by hand.
 TILT_SWEEP: tuple[Candidate, ...] = tuple(
