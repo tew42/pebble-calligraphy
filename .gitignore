@@ -1,2 +1,5 @@
 build/
 node_modules/
+tools/preview/out/
+__pycache__/
+*.pyc
