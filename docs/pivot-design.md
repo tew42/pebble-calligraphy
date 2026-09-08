@@ -380,3 +380,43 @@ Open choices, all passing the gate:
 - `ceiling.svg` — the bisected unimodal region as a band, the closed form on its
   edge, the round-1 chord ceiling far above it, and every candidate's `s(d)`.
   C1 visibly leaves the band between d = 95 and 135.
+
+
+## 13. Amendment: the criterion is relaxed at both degenerate ends
+
+Unimodality is required through the working range, **not** at overlap or
+opposition, where the geometry is degenerate by design. The metric encodes this
+with two guards, and a dip is only counted when both are cleared:
+
+- peak |k| corresponds to a radius under 1000 px — ten times the face; and
+- the connector departs from its own chord by at least half a pixel.
+
+Without them, floating-point noise in a sub-pixel curve yields 100% dip readings
+from nothing. In practice the relaxation covers roughly `d < 5` and `d > 175`.
+
+It does **not** rescue C1 x 0.70. Its failures run from `d = 117.5` (headroom
+1.04) to `d = 151` (91% dip), nowhere near either end, so it stays disqualified —
+which is what makes the point that the depth function's *shape* has to change
+rather than its amplitude.
+
+## 14. Watching the finalists move
+
+Static positions cannot settle whether D1's similarity to the current
+construction is a virtue or a reason not to bother, so `tools/preview/` also
+renders the finalists over a full hour of clock time:
+
+- `anim-current.gif` — D1 / D3 / C3 side by side, current stems, C0 underlaid.
+- `anim-stems.gif` — D1 and C3 across `current`, `symmetric`, `strong-asym` and
+  `short` stems.
+- `anim-filmstrip.svg` — the same hour as a static contact sheet.
+
+The 12:00 hour is used because it starts on exact overlap; over the hour the
+separation runs 0 -> 178.5 -> 35.5 deg, so one loop covers overlap,
+near-opposition, and the mid-range twice — opening once and closing once.
+
+Rendering is two steps (`report.py --anim`, then `render_anim.sh`) because
+rasterizing SVG needs a browser. The GIF encoder is `gifwriter.py`, written
+against the standard library: the bundled Chromium writes only PNG and the
+bundled ffmpeg is a stripped Playwright build with no GIF encoder, so neither
+tool could close the loop on its own. Its LZW output is round-trip decoded in
+`test_harness.py`, so a silently corrupt GIF cannot ship.

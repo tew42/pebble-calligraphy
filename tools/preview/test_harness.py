@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
 
 import geometry as G
+import gifwriter
 import report as R
 
 FAILURES: list[str] = []
@@ -272,6 +274,117 @@ def test_closed_form_sits_under_the_empirical_limit() -> None:
               f"{name}: worst depth is {worst_ratio:.0%} of the measured limit")
 
 
+def test_animation_covers_the_hour() -> None:
+    """The animated hour has to pass through both accepted degeneracies, or it
+    is not exercising the interesting part of the design."""
+    print("the animated hour spans overlap to opposition")
+    deltas = [G.separation_degrees(12, minute) for minute in range(R.ANIM_FRAMES)]
+    check(len(deltas) == 60, f"{len(deltas)} frames")
+    check(abs(deltas[0]) < 1e-9, f"frame 0 is exact overlap (d = {deltas[0]:.2f})")
+    check(max(deltas) > 178.0, f"reaches near-opposition (max d = {max(deltas):.1f})")
+    check(deltas[-1] < 40.0, f"comes back down (final d = {deltas[-1]:.1f})")
+    rising = deltas[:deltas.index(max(deltas))]
+    check(all(b > a for a, b in zip(rising, rising[1:])),
+          "separation opens monotonically up to opposition")
+
+
+def test_animation_frames_are_wellformed() -> None:
+    """Emitted frames must be valid XML -- checked with the standard library, so
+    the harness still has no third-party dependencies."""
+    print("emitted animation frames are well-formed SVG")
+    import tempfile
+    import xml.etree.ElementTree as ElementTree
+
+    face = G.Face()
+    layout = R.ANIM_LAYOUTS_BY_NAME["anim-current"]
+    with tempfile.TemporaryDirectory() as directory:
+        count = R.write_animation_frames(face, layout, 12, directory)
+        check(count == R.ANIM_FRAMES, f"wrote {count} frames")
+        frame_dir = os.path.join(directory, "anim", layout.name)
+        names = sorted(n for n in os.listdir(frame_dir) if n.endswith(".svg"))
+        check(len(names) == R.ANIM_FRAMES, f"{len(names)} svg files on disk")
+        bad = []
+        for name in names:
+            try:
+                ElementTree.parse(os.path.join(frame_dir, name))
+            except ElementTree.ParseError as error:
+                bad.append(f"{name}: {error}")
+        check(not bad, f"all frames parse ({bad[:1]})" if bad else "all frames parse")
+        check(os.path.exists(os.path.join(frame_dir, "manifest.txt")),
+              "manifest written")
+
+
+def test_gif_writer_roundtrip() -> None:
+    """gifwriter has to survive its own PNG decoder, so encode a known image with
+    Chromium-style filters and check the GIF header and frame count."""
+    print("gif writer produces a well-formed GIF")
+    import tempfile
+
+    palette = [(13, 15, 18), (255, 255, 255), (255, 138, 61)]
+    palette += [(0, 0, 0)] * (256 - len(palette))
+    width, height = 8, 4
+    frames = [bytes([(x + f) % 3 for x in range(width)] * height)
+              for f in range(3)]
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "t.gif")
+        gifwriter.write_gif(path, width, height, palette, frames, 17)
+        blob = open(path, "rb").read()
+    check(blob[:6] == b"GIF89a", "GIF89a signature")
+    check(blob[-1:] == b"\x3b", "trailer present")
+    check(blob.count(b"\x21\xf9\x04") == 3, "three graphic control blocks")
+    check(b"NETSCAPE2.0" in blob, "loops forever")
+
+
+def test_gif_lzw_is_decodable() -> None:
+    """Decode our own LZW stream back, so a silently corrupt GIF cannot ship."""
+    print("gif LZW round-trips")
+    original = bytes([0, 0, 1, 1, 2, 2, 2, 1, 0, 0, 0, 1, 2, 1, 0] * 40)
+    blocked = gifwriter.lzw_compress(original, 8)
+
+    # unpack sub-blocks
+    payload = bytearray()
+    index = 0
+    while blocked[index]:
+        length = blocked[index]
+        payload += blocked[index + 1:index + 1 + length]
+        index += 1 + length
+
+    codes = []
+    width = 9
+    bit = 0
+    table = {i: bytes((i,)) for i in range(256)}
+    next_code = 258
+    out = bytearray()
+    previous = None
+    total_bits = len(payload) * 8
+    while bit + width <= total_bits:
+        chunk = 0
+        for k in range(width):
+            byte = payload[(bit + k) // 8]
+            chunk |= ((byte >> ((bit + k) % 8)) & 1) << k
+        bit += width
+        if chunk == 256:
+            table = {i: bytes((i,)) for i in range(256)}
+            next_code, width, previous = 258, 9, None
+            continue
+        if chunk == 257:
+            break
+        if chunk in table:
+            entry = table[chunk]
+        else:
+            entry = previous + previous[:1]
+        out += entry
+        if previous is not None:
+            table[next_code] = previous + entry[:1]
+            next_code += 1
+            if next_code >= (1 << width) and width < 12:
+                width += 1
+        previous = entry
+        codes.append(chunk)
+    check(bytes(out) == original,
+          f"decoded {len(out)} of {len(original)} bytes identically")
+
+
 def main() -> int:
     for test in (
         test_stem_configs,
@@ -290,6 +403,10 @@ def main() -> int:
         test_current_rule_flattens_under_changed_stems,
         test_tilt_does_not_induce_flattening,
         test_closed_form_sits_under_the_empirical_limit,
+        test_animation_covers_the_hour,
+        test_animation_frames_are_wellformed,
+        test_gif_writer_roundtrip,
+        test_gif_lzw_is_decodable,
     ):
         test()
     print()

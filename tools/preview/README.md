@@ -11,7 +11,19 @@ python3 test_harness.py          # self-checks
 ```
 
 Individual sheets: `--grid --zoom --curvature --ceiling --tilt --stems
---profiles --locus --metrics`.
+--profiles --locus --metrics --filmstrip`.
+
+Animations are two steps, because rasterizing needs a browser:
+
+```sh
+python3 report.py --anim            # 60 per-frame SVGs per layout
+./render_anim.sh anim-current       # rasterize + encode  (~1 min)
+./render_anim.sh anim-stems
+```
+
+`--anim-hour` picks the hour (default 12, which starts on exact overlap); over
+one hour the separation runs 0 -> 178.5 -> 35.5 deg, so a single loop passes
+through overlap, near-opposition and the mid-range twice.
 Useful flags: `--times 12:00,3:00,4:50`, `--stem-config symmetric`.
 
 ## Scope
@@ -45,6 +57,9 @@ Any disagreement is below 1/65535 of a hand length -- far under a pixel.
 | `stems-grid.svg` | does the rule survive a change of stem geometry |
 | `profiles.svg` | pivot depth s(delta) for every candidate on one axis |
 | `pivot-locus.svg` | the pivot's path over a full 12 hours -- 11-lobed rosettes |
+| `anim-current.gif` | D1 / D3 / C3 over an hour, current stems |
+| `anim-stems.gif` | D1 and C3 over an hour, four stem configurations |
+| `anim-filmstrip.svg` | the same hour as a static 12-frame contact sheet |
 | `metrics.md` | all 720 positions x 17 candidates x 6 stem configs |
 | `ceiling.json` | the bisected unimodality limit, cached |
 
@@ -59,7 +74,13 @@ triangle A-B-centre.
   and the stem configurations. Stem radii and hand lengths are parameters, so
   every candidate can be swept over alternative geometries.
 - `svgcanvas.py` -- the SVG writer.
-- `report.py` -- metrics and sheet generation.
+- `report.py` -- metrics, sheet generation, animation frame sequences.
+- `render_anim.sh` -- the only part needing an external binary: Chromium
+  (`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, overridable with
+  `CHROME=`) to rasterize the frames. Override the output scale with `SCALE=2`.
+- `gifwriter.py` -- PNG -> animated GIF, standard library only. Exists because
+  Chromium writes only PNG and the bundled ffmpeg is a stripped Playwright build
+  with no GIF encoder (libvpx only), so neither tool can close the loop.
 - `test_harness.py` -- invariants: construction fidelity, tangent-triangle
   containment, stem homogeneity and mirror symmetry, curvature continuity, and
   unimodality of the round-2 depth rules across every stem configuration (with

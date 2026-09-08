@@ -350,8 +350,10 @@ def draw_panel(
     heading: str | None = None,
     footer: str | None = None,
     show_triangle: bool = True,
+    scale: float | None = None,
+    line_width: float = 1.4,
 ) -> tuple[float, float]:
-    sc = PANEL_SCALE
+    sc = PANEL_SCALE if scale is None else scale
     pw, ph = face.width * sc, face.height * sc
 
     def T(point):
@@ -389,7 +391,7 @@ def draw_panel(
             cv.circle(*T(cl.pivot), 1.6, fill=colour)
     else:
         cv.polyline([T(p) for p in reference.points], stroke=S.INK,
-                    stroke_width=1.4)
+                    stroke_width=line_width)
         cv.circle(*T(reference.pivot), 2.1, fill=S.PIVOT)
 
     for point in (reference.hour_tip, reference.minute_tip):
@@ -1039,6 +1041,182 @@ def sheet_ceiling(face, stems, out_path, cache_path=None) -> None:
     cv.write(out_path)
 
 
+
+# ---------------------------------------------------------------------------
+# Round 3: animation over an hour
+# ---------------------------------------------------------------------------
+
+ANIM_FPS = 6
+ANIM_FRAMES = 60          # one frame per minute of the hour
+
+
+@dataclass(frozen=True)
+class AnimLayout:
+    """A grid of panels to animate: rows are stem configurations, columns are
+    candidates.  C0 is underlaid in every cell rather than given a column."""
+
+    name: str
+    title: str
+    subtitle: str
+    rows: tuple[G.Stems, ...]
+    columns: tuple[str, ...]
+    scale: float
+    row_label_width: float
+    show_row_labels: bool = True
+
+
+ANIM_LAYOUTS: tuple[AnimLayout, ...] = (
+    AnimLayout(
+        name="anim-current",
+        title="Pivot finalists over one hour",
+        subtitle="white = candidate     amber = current construction",
+        rows=(G.STEMS_BY_NAME["current"],),
+        columns=("d1-arc-sin", "d3-arc-p075", "c3-chord-035"),
+        scale=1.30,
+        row_label_width=24.0,
+        show_row_labels=False,
+    ),
+    AnimLayout(
+        name="anim-stems",
+        title="Finalists across stem geometries",
+        subtitle="white = candidate     amber = current construction",
+        rows=tuple(G.STEMS_BY_NAME[name] for name in
+                   ("current", "symmetric", "strong-asym", "short")),
+        columns=("d1-arc-sin", "c3-chord-035"),
+        scale=0.86,
+        row_label_width=132.0,
+    ),
+)
+
+ANIM_LAYOUTS_BY_NAME = {layout.name: layout for layout in ANIM_LAYOUTS}
+
+
+def animation_frame(face, layout: AnimLayout, hour: int, minute: int) -> S.Canvas:
+    reference = G.CANDIDATES_BY_KEY["c0-current"]
+    candidates = [G.CANDIDATES_BY_KEY[key] for key in layout.columns]
+    pw = face.width * layout.scale
+    ph = face.height * layout.scale
+    gap = 10.0
+    left = layout.row_label_width
+    top = 118.0
+
+    cv = S.Canvas(left + len(layout.columns) * (pw + gap) + 16,
+                  top + len(layout.rows) * (ph + gap) + 6)
+
+    delta = G.separation_degrees(hour, minute)
+    cv.text(24, 32, layout.title, size=15, fill=S.LABEL, weight="600")
+    cv.text(24, 50, layout.subtitle, size=10, fill=S.DIM)
+
+    # Time and separation readout, plus a bar so the phase of the hour is
+    # readable at a glance while the loop runs.
+    cv.text(cv.width - 24, 32, label_time(hour, minute), size=20,
+            fill=S.LABEL, anchor="end", weight="600")
+    cv.text(cv.width - 24, 50, f"delta = {delta:5.1f} deg", size=11,
+            fill=S.PIVOT, anchor="end")
+
+    bar_x, bar_w, bar_y = 24.0, cv.width - 220.0, 64.0
+    cv.rect(bar_x, bar_y, bar_w, 4, fill="#242a31", rx=2)
+    cv.rect(bar_x, bar_y, bar_w * (minute / (ANIM_FRAMES - 1)), 4,
+            fill=S.PIVOT, rx=2, opacity=0.9)
+    for mark, tag in ((0.0, "overlap"), (32.7 / 59.0, "opposition")):
+        cv.line(bar_x + bar_w * mark, bar_y - 4, bar_x + bar_w * mark,
+                bar_y + 8, stroke=S.TIP, stroke_width=0.8, opacity=0.8)
+        cv.text(bar_x + bar_w * mark, bar_y + 19, tag, size=8, fill=S.DIM,
+                anchor="middle" if mark > 0.05 else "start")
+
+    for column, candidate in enumerate(candidates):
+        x = left + column * (pw + gap)
+        cv.text(x + pw / 2, top - 10, candidate.label, size=11, fill=S.LABEL,
+                anchor="middle", weight="600")
+
+    for row, stems in enumerate(layout.rows):
+        y = top + row * (ph + gap)
+        if layout.show_row_labels:
+            cv.text(20, y + ph / 2 - 4, stems.name, size=11, fill=S.LABEL,
+                    weight="600")
+            cv.text(20, y + ph / 2 + 10,
+                    f"r {stems.hour_inner:.2f}/{stems.minute_inner:.2f}R",
+                    size=8, fill=S.DIM)
+        for column, candidate in enumerate(candidates):
+            x = left + column * (pw + gap)
+            cl = G.build_centerline(hour, minute, candidate.rule, face, stems)
+            depth = G.norm(G.sub(cl.pivot, cl.context.center))
+            draw_panel(cv, x, y, face, stems, hour, minute, candidate,
+                       underlay=reference, footer=f"s = {depth:.1f} px",
+                       show_triangle=False, scale=layout.scale,
+                       line_width=1.9)
+    return cv
+
+
+def write_animation_frames(face, layout: AnimLayout, hour: int, out_dir,
+                           fps: int = ANIM_FPS) -> int:
+    directory = os.path.join(out_dir, "anim", layout.name)
+    os.makedirs(directory, exist_ok=True)
+    for old in os.listdir(directory):
+        if old.endswith(".svg"):
+            os.remove(os.path.join(directory, old))
+
+    first = animation_frame(face, layout, hour, 0)
+    for minute in range(ANIM_FRAMES):
+        canvas = animation_frame(face, layout, hour, minute)
+        canvas.write(os.path.join(directory, f"frame-{minute:04d}.svg"))
+
+    with open(os.path.join(directory, "manifest.txt"), "w",
+              encoding="utf-8") as handle:
+        handle.write(
+            f"name {layout.name}\n"
+            f"frames {ANIM_FRAMES}\n"
+            f"fps {fps}\n"
+            f"hour {hour}\n"
+            f"width {int(first.width)}\n"
+            f"height {int(first.height)}\n"
+        )
+    return ANIM_FRAMES
+
+
+FILMSTRIP_KEYS = ("d1-arc-sin", "d3-arc-p075", "c3-chord-035")
+
+
+def sheet_filmstrip(face, stems, hour, out_path, step: int = 5) -> None:
+    """A static contact sheet of the same hour, for frame-by-frame study and in
+    case a GIF will not play wherever these end up being viewed."""
+    minutes = list(range(0, 60, step))
+    rows = [G.CANDIDATES_BY_KEY[key] for key in FILMSTRIP_KEYS]
+    reference = G.CANDIDATES_BY_KEY["c0-current"]
+    scale = 0.56
+    pw, ph = face.width * scale, face.height * scale
+    gap, left, top = 5, 172, 96
+    cv = S.Canvas(left + len(minutes) * (pw + gap) + 16,
+                  top + len(rows) * (ph + gap) + 24)
+
+    cv.text(24, 32, f"The {label_time(hour, 0)} hour, every {step} minutes",
+            size=16, fill=S.LABEL, weight="600")
+    cv.text(24, 50, "white = candidate     amber = current construction     "
+            f"{face.name}, stems: {stems.describe()}", size=10, fill=S.DIM)
+    cv.text(24, 68, "delta runs 0 -> 180 -> 35.5 deg over the hour, so overlap "
+            "and near-opposition both appear once.", size=10, fill=S.DIM)
+
+    for column, minute in enumerate(minutes):
+        x = left + column * (pw + gap)
+        cv.text(x + pw / 2, top - 16, label_time(hour, minute), size=9,
+                fill=S.LABEL, anchor="middle", weight="600")
+        cv.text(x + pw / 2, top - 5,
+                f"{G.separation_degrees(hour, minute):.0f}", size=8,
+                fill=S.DIM, anchor="middle")
+
+    for row, candidate in enumerate(rows):
+        y = top + row * (ph + gap)
+        cv.text(16, y + 16, candidate.label, size=10, fill=S.LABEL,
+                weight="600")
+        cv.text(16, y + 28, candidate.formula[:26], size=7, fill=S.DIM)
+        cv.text(16, y + 38, candidate.formula[26:], size=7, fill=S.DIM)
+        for column, minute in enumerate(minutes):
+            draw_panel(cv, left + column * (pw + gap), y, face, stems, hour,
+                       minute, candidate, underlay=reference,
+                       show_triangle=False, scale=scale, line_width=1.5)
+    cv.write(out_path)
+
+
 # ---------------------------------------------------------------------------
 # Metrics report
 # ---------------------------------------------------------------------------
@@ -1160,6 +1338,11 @@ def main() -> None:
     parser.add_argument("--zoom", action="store_true")
     parser.add_argument("--curvature", action="store_true")
     parser.add_argument("--ceiling", action="store_true")
+    parser.add_argument("--anim", action="store_true",
+                        help="emit per-frame SVGs; then run ./render_anim.sh")
+    parser.add_argument("--filmstrip", action="store_true")
+    parser.add_argument("--anim-hour", type=int, default=12)
+    parser.add_argument("--anim-fps", type=int, default=ANIM_FPS)
     parser.add_argument("--tilt", action="store_true")
     parser.add_argument("--stems", action="store_true")
     parser.add_argument("--profiles", action="store_true")
@@ -1173,8 +1356,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if not any((args.all, args.grid, args.zoom, args.curvature,
-                args.ceiling, args.tilt, args.stems, args.profiles,
-                args.locus, args.metrics)):
+                args.ceiling, args.anim, args.filmstrip, args.tilt,
+                args.stems, args.profiles, args.locus, args.metrics)):
         args.all = True
 
     face = G.Face()
@@ -1210,6 +1393,15 @@ def main() -> None:
     if args.all or args.locus:
         sheet_locus(face, stems, path("pivot-locus.svg"))
         print("wrote pivot-locus.svg")
+    if args.all or args.filmstrip:
+        sheet_filmstrip(face, stems, args.anim_hour, path("anim-filmstrip.svg"))
+        print("wrote anim-filmstrip.svg")
+    if args.all or args.anim:
+        for layout in ANIM_LAYOUTS:
+            count = write_animation_frames(face, layout, args.anim_hour,
+                                           args.out, args.anim_fps)
+            print(f"wrote {count} frames to anim/{layout.name}/ "
+                  f"-- now run ./render_anim.sh {layout.name}")
     if args.all or args.metrics:
         write_metrics(face, path("metrics.md"))
         print("wrote metrics.md")
