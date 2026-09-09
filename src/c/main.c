@@ -62,9 +62,6 @@
 #define HOUR_STEM_RATIO 0.25f
 #define MINUTE_STEM_RATIO 0.4f
 
-#define MAX_PIVOT_OFFSET_RATIO 0.15f
-#define PIVOT_PULL_BIAS 0.50f
-
 #define HOUR_TIP_WIDTH 3.0f
 #define HOUR_BODY_WIDTH 6.0f
 #define MIDDLE_WIDTH 3.0f
@@ -407,32 +404,70 @@ static uint16_t get_current_time_key(void) {
 /* Pivot                                                                     */
 /* ------------------------------------------------------------------------- */
 
-static float shape_pivot_pull(float raw_pull) {
-  const float x =
-    clamp_float(raw_pull, 0.0f, 1.0f);
-
-  return
-    x * (1.0f + PIVOT_PULL_BIAS) /
-    (1.0f + PIVOT_PULL_BIAS * x);
-}
-
+/*
+ * The pivot sits on the hands' angle bisector, at
+ *
+ *   s = min(r_h, r_m) * cos(d/2) * sin(d/2) / (1 + sin(d/2))
+ *
+ * where d is the angle between the hands and r_h, r_m are the radii at which
+ * the two straight stems end.
+ *
+ * Both stem tangent lines are radial, so they always meet at the watch centre
+ * and the connector is always a rounded corner of the triangle (A, centre, B).
+ * The deepest such rounding is a circular arc tangent to both radial lines,
+ * and the circle tangent to one of them at radius r, centred on the bisector,
+ * crosses the bisector at r * cos(d/2) / (1 + sin(d/2)).  Tangency to both
+ * radials at unequal radii is impossible, so the shorter stem governs and that
+ * expression is a ceiling on how far out the pivot can sit before the
+ * curvature flattens at the pivot instead of peaking there.
+ *
+ * The sin(d/2) factor spends that ceiling according to how open the hands are.
+ * It goes to zero at overlap, where the connector has to fold through the true
+ * centre, and approaches the full ceiling near opposition, where the connector
+ * is nearly straight and the ceiling itself has collapsed.
+ *
+ * Written as cos/(1 + sin) rather than the algebraically identical
+ * (1 - sin)/cos so that there is no 0/0 at opposition, and so that the whole
+ * rule needs nothing but square roots -- no atan, no division by a vanishing
+ * cosine.
+ *
+ * Two properties this has and its predecessor did not.  It carries no tuned
+ * constants: every term is either a half-angle of the hand separation or a
+ * stem radius.  And it scales with the stems rather than with the face, so
+ * changing a stem ratio moves the pivot with the curve instead of leaving it
+ * behind; the previous rule was anchored to the face radius, so the pivot sat
+ * 12.6 px from the centre at quadrature no matter what the stems were doing.
+ */
 static Vec2 calculate_pivot_point(
     Vec2 center,
-    Vec2 hour_point,
-    Vec2 minute_point,
-    float maximum_radius
+    Vec2 hour_connector_point,
+    Vec2 minute_connector_point
 ) {
   const Vec2 hour_radial =
     direction_between(
       center,
-      hour_point
+      hour_connector_point
     );
 
   const Vec2 minute_radial =
     direction_between(
       center,
-      minute_point
+      minute_connector_point
     );
+
+  const Vec2 direction_sum =
+    add_vec2(
+      hour_radial,
+      minute_radial
+    );
+
+  const float direction_sum_length =
+    length_vec2(direction_sum);
+
+  /* Hands exactly opposed: there is no bisector, and no offset is wanted. */
+  if (direction_sum_length < VECTOR_EPSILON) {
+    return center;
+  }
 
   const float radial_dot =
     clamp_float(
@@ -444,58 +479,54 @@ static Vec2 calculate_pivot_point(
       1.0f
     );
 
-  const float sine_squared =
-    clamp_float(
-      1.0f - radial_dot * radial_dot,
-      0.0f,
-      1.0f
-    );
-
-  const float raw_pull_strength =
-    square_root_float(sine_squared);
-
-  const float shaped_pull_strength =
-    shape_pivot_pull(raw_pull_strength);
-
-  const Vec2 direction_sum =
-    add_vec2(
-      hour_radial,
-      minute_radial
-    );
-
-  const float direction_sum_length =
-    length_vec2(direction_sum);
-
-  if (direction_sum_length < VECTOR_EPSILON) {
-    return center;
-  }
-
-  const Vec2 pull_direction =
-    multiply_vec2(
-      direction_sum,
-      1.0f / direction_sum_length
-    );
-
-  const float bisector_strength =
+  const float cosine_half_angle =
     square_root_float(
       clamp_float(
-        direction_sum_length * 0.5f,
+        0.5f *
+        (1.0f + radial_dot),
         0.0f,
         1.0f
       )
     );
 
+  const float sine_half_angle =
+    square_root_float(
+      clamp_float(
+        0.5f *
+        (1.0f - radial_dot),
+        0.0f,
+        1.0f
+      )
+    );
+
+  const float hour_inner_radius =
+    distance_between(
+      center,
+      hour_connector_point
+    );
+
+  const float minute_inner_radius =
+    distance_between(
+      center,
+      minute_connector_point
+    );
+
+  const float smaller_inner_radius =
+    hour_inner_radius < minute_inner_radius
+      ? hour_inner_radius
+      : minute_inner_radius;
+
   const float pivot_offset =
-    maximum_radius *
-    MAX_PIVOT_OFFSET_RATIO *
-    shaped_pull_strength *
-    bisector_strength;
+    smaller_inner_radius *
+    cosine_half_angle *
+    sine_half_angle /
+    (1.0f + sine_half_angle);
 
   return add_vec2(
     center,
     multiply_vec2(
-      pull_direction,
-      pivot_offset
+      direction_sum,
+      pivot_offset / direction_sum_length
     )
   );
 }
@@ -1088,14 +1119,6 @@ static CenterlineResult build_centerline(
       -1.0f
     );
 
-  const Vec2 guide_point =
-    calculate_pivot_point(
-      center,
-      hour_point,
-      minute_point,
-      maximum_radius
-    );
-
   const Vec2 hour_connector_point =
     add_vec2(
       hour_point,
@@ -1114,6 +1137,17 @@ static CenterlineResult build_centerline(
         minute_length *
         MINUTE_STEM_RATIO
       )
+    );
+
+  /*
+   * The pivot is placed from where the stems end, not from where the hands
+   * end, so the connector points have to be in hand before it is placed.
+   */
+  const Vec2 guide_point =
+    calculate_pivot_point(
+      center,
+      hour_connector_point,
+      minute_connector_point
     );
 
   const int connector_first_index =

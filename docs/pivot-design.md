@@ -1079,3 +1079,80 @@ curvature removes the reverse turn entirely at every ratio, so the constraint
 only exists if the cubic architecture stays. And the pixel column assumes the
 current hand lengths; longer hands admit larger stems, and the same ratio then
 costs more pixels.
+
+# Round 7: D1 shipped
+
+## 33. What went into main.c
+
+D1 replaces the pivot rule outright. The whole of it:
+
+    s = min(r_h, r_m) * cos(d/2) * sin(d/2) / (1 + sin(d/2))
+    P = C + s * unit(u_h + u_m)
+
+Three changes in `src/c/main.c`, nothing else touched:
+
+- `calculate_pivot_point` rewritten. It now takes the two **connector points**
+  rather than the hand tips, because the rule depends on where the stems end,
+  not on where the hands end, and it no longer takes `maximum_radius` at all.
+- The connector points are computed before the pivot in `build_centerline`
+  instead of after it, so they are available to pass in.
+- `MAX_PIVOT_OFFSET_RATIO`, `PIVOT_PULL_BIAS` and `shape_pivot_pull` are gone.
+  Those were the four tuned constants: two literals and the two functional
+  forms wrapped around them.
+
+Note what is *not* in the diff. The minimum-bending tangent solve, the Hermite
+evaluation, the stroke width profile and the polygon construction are all
+untouched -- the pivot was the only thing under discussion, and it is the only
+thing that moved.
+
+The derivation is section 9 for the ceiling and section 11 for the
+`sin(delta/2)` factor. Two details of the C are worth flagging:
+
+- `cos/(1 + sin)` rather than the algebraically identical `(1 - sin)/cos`: no
+  0/0 at opposition, and the whole rule then needs nothing but square roots, so
+  `square_root_float()` covers it and no `atan` is required.
+- Both degenerate ends fall out rather than being special-cased. At overlap
+  `sin(d/2)` is zero, so the offset is zero and the pivot is exactly on the
+  centre. At opposition the bisector itself vanishes, which the existing
+  `VECTOR_EPSILON` guard already returns the centre for -- and `cos(d/2)` would
+  have given zero anyway, so the guard and the formula agree.
+
+Verified by `tools/preview/check_c_pivot.py`, which lifts the function and its
+vector helpers verbatim out of `main.c`, compiles them with
+`-Wall -Wextra -Werror`, and compares against `geometry.py`'s D1 at every hand
+position in all six stem configurations: **4320 cases, worst disagreement
+3.2e-4 px** (float32 against float64), and the pivot is *exactly* on the centre
+at overlap in every configuration. The minimum-bending solve never falls back
+and the pivot index never leaves its valid range, both over all 720 positions.
+
+Depth against the rule it replaces, on the shipped stems:
+
+| delta | D1 | old rule |
+|---:|---:|---:|
+| 0 | 0.00 | 0.00 |
+| 27.5 | 8.39 | 8.32 |
+| 66 | 13.31 | 12.92 |
+| 88 | 13.27 | 12.72 |
+| 121 | 10.31 | 9.47 |
+| 154 | 5.00 | 3.84 |
+
+Close through the middle and progressively deeper past quadrature, which is the
+band where the old rule's face-anchored scaling was pulling the pivot in.
+
+## 34. Pending: the stem-ratio constraint for a settings page
+
+The decision, to be enforced wherever the stems become user-settable:
+
+    3/5 <= r_m / r_h <= 5/3
+
+Both endpoints give the same worst reverse turn, **3.54 degrees** at
+`delta = 55` -- the range is symmetric because the defect depends only on
+`|log(r_m/r_h)|` (section 32). That sits between the 3 degree band
+(`[0.65, 1.55]`) and the 4 degree band (`[0.56, 1.77]`), so it is a deliberate
+choice of about 3.5 degrees rather than a reading off either table.
+
+Not implemented: `main.c` still has `HOUR_STEM_RATIO` and `MINUTE_STEM_RATIO`
+as fixed literals, so there is nothing yet to constrain. When they become
+settings, the constraint belongs on the ratio of the resulting inner radii
+`r_h = L_h (1 - stem_h)` and `r_m = L_m (1 - stem_m)`, not on the stem ratios
+themselves -- the hand lengths are in between.

@@ -98,6 +98,12 @@ triangle A-B-centre.
   shown both at a moderate stem size and at the largest that fits inside the
   hands -- the case a ratio budget has to survive.
 - `shot.sh` -- rasterize named sheets to PNG so they can be looked at.
+- `check_c_pivot.py` -- the one script here that tests the *watchface* rather
+  than a model of it: it lifts `calculate_pivot_point` and its vector helpers
+  verbatim out of `src/c/main.c`, compiles them, and compares the result against
+  `geometry.py`'s D1 at every hand position in every stem configuration (4320
+  cases; agrees to 3e-4 px, which is float32 against float64).  Needs a C
+  compiler, which nothing else here does.
 - `render_anim.sh` -- the only part needing an external binary: Chromium
   (`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, overridable with
   `CHROME=`) to rasterize the frames. Override the output scale with `SCALE=2`.
