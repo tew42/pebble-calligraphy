@@ -10,6 +10,7 @@ import math
 import os
 import sys
 
+import curvature as CV
 import geometry as G
 import gifwriter
 import report as R
@@ -274,6 +275,142 @@ def test_closed_form_sits_under_the_empirical_limit() -> None:
               f"{name}: worst depth is {worst_ratio:.0%} of the measured limit")
 
 
+def test_compact_families_hit_the_junctions_at_zero() -> None:
+    """Compact support means k reaches the stem junctions exactly, not nearly."""
+    print("compact families: k = 0 at both stem junctions")
+    face = G.Face()
+    for shape in (CV.F2, CV.F3, CV.F4):
+        worst = 0.0
+        for stems in G.STEM_CONFIGS:
+            for minute in range(0, 60, 7):
+                cl = CV.build_compact_centerline(12, minute, shape, None,
+                                                 face, stems)
+                n = len(cl.curvatures)
+                worst = max(worst, abs(cl.curvatures[0]),
+                            abs(cl.curvatures[n - 1]))
+        check(worst == 0.0, f"{shape.key}: junction curvature exactly 0")
+
+
+def test_compact_families_never_swerve() -> None:
+    print("compact families: single-signed curvature, no reverse turn")
+    face = G.Face()
+    for shape in (CV.F2, CV.F3, CV.F4):
+        worst_rev = 0.0
+        negative = 0
+        for stems in G.STEM_CONFIGS:
+            for minute in range(60):
+                cl = CV.build_compact_centerline(12, minute, shape, None,
+                                                 face, stems)
+                negative += sum(1 for k in cl.curvatures if k < 0.0)
+                turn = _turn_series(cl.points)
+                total = sum(turn)
+                worst_rev = max(worst_rev, sum(
+                    abs(v) for v in turn
+                    if abs(v) > 0.02 and (v > 0) != (total > 0)))
+        check(negative == 0, f"{shape.key}: curvature never changes sign")
+        check(worst_rev < 0.01, f"{shape.key}: reverse turn {worst_rev:.3f} deg")
+
+
+def _turn_series(points):
+    out = []
+    for i in range(1, len(points) - 1):
+        a = G.sub(points[i], points[i - 1])
+        b = G.sub(points[i + 1], points[i])
+        na, nb = G.norm(a), G.norm(b)
+        out.append(0.0 if na < 1e-9 or nb < 1e-9 else
+                   math.degrees(math.atan2(G.cross(a, b) / (na * nb),
+                                           G.dot(a, b) / (na * nb))))
+    return out
+
+
+def test_f4_reproduces_d1_depth() -> None:
+    """F4 on its own dial is the arc-apex fillet, which is what D1 approximates."""
+    print("F4 on d = min(r) sin(delta/2) matches D1's depth rule")
+    face = G.Face()
+    rule = G.CANDIDATES_BY_KEY["d1-arc-sin"].rule
+    worst = 0.0
+    for stems in G.STEM_CONFIGS:
+        for hour in range(0, 12, 3):
+            for minute in range(0, 60, 5):
+                cl = CV.build_compact_centerline(hour, minute, CV.F4, None,
+                                                 face, stems)
+                ref = G.build_centerline(hour, minute, rule, face, stems)
+                target = G.norm(G.sub(ref.pivot, ref.context.center))
+                worst = max(worst, abs(cl.exact_depth - target))
+    check(worst < 1e-9, f"depth agrees with D1 to {worst:.2e} px")
+
+
+def test_compact_dial_never_runs_out_of_stem() -> None:
+    print("the tangent-length rule never exceeds min(r_h, r_m)")
+    face = G.Face()
+    clamps = 0
+    for shape in (CV.F2, CV.F3, CV.F4):
+        for stems in G.STEM_CONFIGS:
+            for hour, minute in G.ALL_TIMES[::7]:
+                cl = CV.build_compact_centerline(hour, minute, shape, None,
+                                                 face, stems)
+                if cl.clamped:
+                    clamps += 1
+    check(clamps == 0, "no clamping in any stem configuration")
+
+
+def test_overlap_folds_through_the_centre() -> None:
+    """The one shape the aesthetic admits at full overlap."""
+    print("full overlap folds exactly through the centre")
+    face = G.Face()
+    for shape in (CV.F2, CV.F3, CV.F4):
+        for stems in G.STEM_CONFIGS:
+            cl = CV.build_compact_centerline(12, 0, shape, None, face, stems)
+            check(cl.exact_depth == 0.0 and cl.depth < 1e-9,
+                  f"{shape.key}/{stems.name}: depth 0 at overlap")
+
+
+def test_beta_depth_tracks_its_target() -> None:
+    """The integrator fix: no handover band, no systematic offset."""
+    print("F1 tracks the depth target across the whole hour")
+    face, stems = G.Face(), G.DEFAULT_STEMS
+    rule = G.CANDIDATES_BY_KEY["d1-arc-sin"].rule
+    worst = 0.0
+    limited = []
+    for minute in range(60):
+        cl = CV.build_beta_centerline(12, minute, rule, face, stems)
+        ref = G.build_centerline(12, minute, rule, face, stems)
+        target = G.norm(G.sub(ref.pivot, ref.context.center))
+        if cl.clamped:
+            limited.append(G.separation_degrees(12, minute))
+            continue
+        worst = max(worst, abs(cl.exact_depth - target))
+    check(worst < 0.01, f"F1 depth within {worst:.4f} px of target")
+    # nu = 2 is the gentlest Beta with vanishing end curvature, so F1 has a
+    # maximum reachable depth and runs out at wide separation -- the mirror of
+    # F2/F3 running out of stem there.
+    check(bool(limited) and min(limited) > 100.0,
+          f"F1 out of range only past d = {min(limited):.0f}")
+
+
+def test_beta_resolves_its_curvature_spike() -> None:
+    """Uniform-t integration silently truncates the turn past nu ~ 6e4."""
+    print("the refined grid resolves concentrations a uniform grid misses")
+    face, stems = G.Face(), G.DEFAULT_STEMS
+    rule = G.CANDIDATES_BY_KEY["d1-arc-sin"].rule
+    refined = CV.build_beta_centerline(12, 2, rule, face, stems)
+    naive = CV.build_beta_centerline(12, 2, rule, face, stems,
+                                     uniform_integrator=True)
+    check(not refined.degenerate, "refined grid solves at delta = 11")
+    check(refined.concentration > 1e4,
+          f"needs nu = {refined.concentration:.3g} there")
+    # The uniform path scales its step count with sqrt(nu), so it gets there
+    # too -- at ~14 sqrt(nu) steps against the refined grid's fixed budget.
+    naive_error = abs(naive.exact_depth - refined.exact_depth)
+    check(naive_error < 0.01,
+          f"uniform grid agrees once refined, to {naive_error:.4f} px")
+    check(CV._steps_for(refined.concentration, CV.FINAL_STEPS)
+          > 4 * CV.FINAL_STEPS,
+          "but only by spending {:.0f}x the samples".format(
+              CV._steps_for(refined.concentration, CV.FINAL_STEPS)
+              / CV.FINAL_STEPS))
+
+
 def test_animation_covers_the_hour() -> None:
     """The animated hour has to pass through both accepted degeneracies, or it
     is not exercising the interesting part of the design."""
@@ -403,6 +540,13 @@ def main() -> int:
         test_current_rule_flattens_under_changed_stems,
         test_tilt_does_not_induce_flattening,
         test_closed_form_sits_under_the_empirical_limit,
+        test_compact_families_hit_the_junctions_at_zero,
+        test_compact_families_never_swerve,
+        test_f4_reproduces_d1_depth,
+        test_compact_dial_never_runs_out_of_stem,
+        test_overlap_folds_through_the_centre,
+        test_beta_depth_tracks_its_target,
+        test_beta_resolves_its_curvature_spike,
         test_animation_covers_the_hour,
         test_animation_frames_are_wellformed,
         test_gif_writer_roundtrip,

@@ -75,6 +75,20 @@ triangle A-B-centre.
   every candidate can be swept over alternative geometries.
 - `svgcanvas.py` -- the SVG writer.
 - `report.py` -- metrics, sheet generation, animation frame sequences.
+- `curvature.py` -- the round-3 constructions, where `k(s)` is the primitive and
+  the geometry is solved from it rather than interpolated. F1 shapes `k` as a
+  Beta hump over the whole connector and needs a nested bisection; F2/F3/F4 give
+  `k` compact support (flat zero along a straight radial run, one hump, flat
+  zero) which makes the whole thing closed form. `tangent_length_rule` is their
+  one dial, `d = min(r_h, r_m) sin(delta/2)`.
+- `sheet_constructions.py` -- the seven-row comparison: C0, C1, D1, F1-F4, with
+  C0 as the amber reference underlay. Also a 2.6x zoom on the centre through the
+  near-overlap band, and a sheet of the compact families on their own dial.
+- `sheet_curvature.py` -- `k` plotted along the connector for the same seven
+  rows. This is the sheet the families actually differ in.
+- `families_report.py` -- the numbers behind them (`--quick` for one hour
+  instead of all 720 positions); writes `out/families.md`.
+- `shot.sh` -- rasterize named sheets to PNG so they can be looked at.
 - `render_anim.sh` -- the only part needing an external binary: Chromium
   (`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, overridable with
   `CHROME=`) to rasterize the frames. Override the output scale with `SCALE=2`.
@@ -85,7 +99,10 @@ triangle A-B-centre.
   containment, stem homogeneity and mirror symmetry, curvature continuity, and
   unimodality of the round-2 depth rules across every stem configuration (with
   the illustration candidates asserted to *fail*, so the sheets keep making
-  their point).
+  their point). For round 3: that the compact families reach the stem junctions
+  at exactly zero curvature, never change curvature sign, fold exactly through
+  the centre at overlap, never run out of stem, and that F4 on its own dial
+  reproduces D1's depth rule to 4e-14 px.
 
 Two metric guards worth knowing about, because without them the numbers lie:
 a curvature dip is only counted where peak |k| exceeds a 1000 px radius **and**
@@ -94,3 +111,20 @@ the geometry is sub-pixel by design, and measuring a dip in floating-point noise
 otherwise yields 100% readings from nothing.
 
 The reasoning and the recommendation live in [`docs/pivot-design.md`](../../docs/pivot-design.md).
+
+Two numerical traps in the curvature-prescribed solve, both of which produced
+plausible-looking wrong answers before being found:
+
+- **Integrating uniformly in `t` walks past the curvature spike.** A Beta shape
+  with concentration `nu` has its spike about `1/sqrt(nu)` wide, so a uniform
+  grid silently truncates the turn once `nu` is large -- which looked like a
+  broken band in `delta` and a 4e7 px curvature radius. `_grid` overlays a fine
+  sub-grid across +/- 8 sigma of the peak.
+- **Measuring depth on the drawn polyline is not measuring the curve.** Near
+  overlap the whole turn happens inside a window narrower than one of the 30
+  drawn segments, so the polyline chords across the fold and reads over a pixel
+  of depth where the true curve passes through the centre. That artifact was
+  briefly mistaken for a systematic solver offset. Depth now comes from the
+  solve; the drawn samples are allocated by turning as well as arc length, and
+  the compact families sample each piece separately so the tangency points are
+  exact vertices.

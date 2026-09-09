@@ -476,3 +476,183 @@ Not yet attempted: making the handover continuous, either by relaxing the depth
 target across the transition band so the fold and the smooth solve meet, or by
 blending the two curves over it. Both are bounded work, but which depth to
 accept through `delta` 8-15 is a design choice, not a numerical one.
+
+# Round 3: four ways to shape the curvature
+
+## 17. The delta 8-15 band was an integration failure, not a design gap
+
+Section 16 blamed a broken middle band on the handover between the smooth solve
+and the degenerate fold. That was wrong, and the cause was mundane. The Frenet
+integration stepped uniformly in `t`, but a Beta shape with concentration `nu`
+has its curvature spike about `1/sqrt(nu)` wide. Past `nu` of roughly 6e4 the
+uniform grid simply steps over the spike, so the integrated turn came out short,
+the solve failed, and the code fell back to the fold -- taking the depth with
+it. The nonsensical 4e7 px radius was the same thing.
+
+Overlaying a fine sub-grid across +/- 8 sigma of the peak (`sigma =
+sqrt(q(1-q)/nu)`) resolves the spike at any concentration. With that in place:
+
+- the solve runs down to `delta = 1.5`; the fold is used only for `delta <= 1`
+- the 4.23 px pop is gone
+- depth now tracks D1 to within **0.001 px** at every minute of the hour, in all
+  six stem configurations
+
+So there was never a broken band and never a design choice to make there. There
+was also never a `+1.27 px` depth offset: that reading came from measuring depth
+on the *drawn* 30-segment polyline. Near overlap the entire turn happens inside
+a window narrower than one drawn segment, so the polyline chords straight across
+the fold and misses the centre by over a pixel while the true curve passes
+through it. The solved curve was always on target. Depth is now reported from
+the solve, and the drawn samples are allocated by turning as well as by arc
+length so the rendered line follows the fold.
+
+## 18. Compact support: the shape the geometry was asking for
+
+F1 spreads `k` over the whole connector, so `k` can only reach zero *at* the
+junctions, asymptotically. A deep pivot then demands enormous concentration --
+`nu` of 2.4e5 at `delta = 5.5`. That is what made it numerically awkward, and it
+is an artifact of insisting on full support.
+
+Both stem tangent lines are radial, so they meet at the watch centre (section
+2), and the connector is a corner-rounding of the triangle (A, C, B). The
+natural curvature shape for a corner-rounding is therefore *compact*: exactly
+zero along a straight radial run, one hump, exactly zero along the other
+straight run. That has a consequence worth stating plainly -- **`k` reaches the
+stem junctions at exactly zero, so there is no curvature step where the
+connector meets the straight stem.** The cubics all have one; it shows in the
+curvature sheets as a profile that starts and ends visibly off the axis.
+
+Compact support also makes the construction closed form. A symmetric hump is
+mirror-symmetric about its own midpoint, so it leaves and rejoins the two radial
+lines at the *same* distance `d` from the centre. With `H` the hump's arc length
+and `g`, `sigma` the chord and sagitta of the *unit-length* hump (pure shape
+constants at a given turn `Omega = pi - delta`):
+
+    straight runs    alpha = r_h - d,   beta = r_m - d
+    hump chord       2 d sin(delta/2) = H g(Omega)
+    depth            s = d cos(delta/2) - H sigma(Omega)
+
+Eliminating `H` leaves the depth **exactly proportional to `d`**:
+
+    s = d [ cos(delta/2) - 2 sin(delta/2) sigma(Omega) / g(Omega) ]
+
+One dial, and it is a division rather than a root find. No concentration to
+diverge, no spike to resolve, and overlap needs no special case: the target goes
+to zero, so `d` and `H` go to zero and the curve becomes the fold A -> C -> B by
+itself.
+
+| | shape of `k` | `k` continuous | `k'` continuous | closed form |
+|---|---|---|---|---|
+| F1 | `t^m (1-t)^n`, full support | yes | yes | no: nested bisection |
+| F2 | trapezoid (ramp / plateau / ramp) | yes | no, 4 corners | yes |
+| F3 | raised cosine, compact support | yes | yes | yes |
+| F4 | constant (straight / arc / straight) | **no, 2 jumps** | no | yes |
+
+## 19. F4 is the arc-apex ceiling, and D1's depth rule is F4's geometry
+
+F4's bracket collapses to `cos(delta/2) / (1 + sin(delta/2))`, so its reachable
+depth range is exactly `[0, arc_apex_ceiling]` -- the bound section 9 derived
+from the constant-curvature apex. That is not a coincidence: F4 *is* that
+construction. D1's rule is `arc_apex_ceiling * sin(delta/2)`, so driving F4 to
+D1's depth gives, in closed form,
+
+    d = min(r_h, r_m) * sin(delta/2)
+
+and the two agree to the last digit at every hand position and every stem
+configuration. D1 was, without anyone intending it, a cubic approximation to a
+line-arc-line fillet.
+
+That also supplies the compact families' own dial. Driving them by a depth
+target imported from a pivot rule works, but each converts tangent length into
+depth at its own rate, so a target tuned for one is out of reach for another --
+F3 runs out of stem near `delta = 90` and F2 past `delta = 90`. Stating the rule
+on `d` instead removes that entirely:
+
+    d = min(r_h, r_m) * sin(delta/2)
+
+It is one line, identical for every member; it can never ask for more stem than
+exists, so nothing ever clamps in any of the six stem configurations; and the
+depth becomes a *consequence* of the shape rather than something imposed on it.
+The limits come out right with no special casing -- `d -> 0` at overlap so the
+connector folds exactly through the centre, `d -> min(r)` at opposition so both
+straight runs vanish and the connector is one clean hump -- and it scales with
+the stems, so it survives a change of stem length or symmetry.
+
+## 20. How visible is F4's curvature jump?
+
+It breaks the stated requirement, so it needs a number rather than an opinion.
+At a straight-to-arc join of radius `R` the curve pulls away from the incoming
+straight by `R (1 - cos(1/R))` over one pixel of travel:
+
+| stems | R at d=90 | dep | R at d=45 | dep | min R | at d | dep |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| current | 32.2 | 0.016 | 6.8 | 0.073 | 0.10 | 5.5 | 0.207 |
+| strong-asym | 21.5 | 0.023 | 4.5 | 0.110 | 0.07 | 5.5 | 0.138 |
+| short | 17.9 | 0.028 | 3.8 | 0.131 | 0.06 | 5.5 | 0.115 |
+| long | 40.1 | 0.012 | 8.5 | 0.059 | 0.13 | 5.5 | 0.258 |
+
+Sub-pixel everywhere, and largest near overlap -- which is exactly where the
+design wants a kink. Fills are not antialiased on this platform, so a 0.02 px
+departure at quadrature cannot survive rasterization at all. The jump is real in
+`k` and invisible in the drawing.
+
+## 21. Cost, sized for once-per-minute redraw
+
+| | linear solves | root finds | quadrature | transcendentals | can fail |
+|---|---|---|---|---|---|
+| C0 / C1 / D1 | 2 x 4x4 Gauss-Jordan | none | none | 1 sqrt + 30 Hermite evals | yes: solve validity, Tikhonov retry |
+| F1 | none | **nested**: 30 x 44 | ~1600 pts per probe | ~2e6 log/exp/sin/cos | yes: falls back to the fold |
+| F2 / F3 | none | none | 1-D, `g` and `sigma`; tabulate in `Omega` | ~130 sin/cos, or a 32-entry table | no |
+| F4 | none | none | **none** | 30 `sin_lookup` + 30 `cos_lookup` | no |
+
+F1 also has a *maximum* reachable depth: `nu = 2` is the gentlest Beta whose
+curvature still vanishes at both ends (`m, n >= 1`), and past `delta` of about
+110 even that is too deep to match D1, so F1 falls short by up to 1.1 px there.
+That is the mirror image of F2 and F3 running out of stem at wide separation.
+F4 is the only member that never runs out of range anywhere.
+
+F1 is a research instrument, not something to ship: it costs roughly four orders
+of magnitude more than the alternatives and is the only member that can fail.
+F4 is *cheaper than the code in `main.c` today*, because it removes both 4x4
+solves and the validity/retry path along with them; `d = min(r) sin(delta/2)`
+needs one square root, which `square_root_float()` already provides, and the arc
+samples are two table lookups each.
+
+## 22. What the round-3 sheets show
+
+Sheets: `constructions-current.svg`, `constructions-strong-asym.svg`, the
+matching `-zoom-` pair at 2.6x on the centre, `constructions-own-d.svg`, and
+`curvature-current.svg` / `curvature-strong-asym.svg`.
+
+Swept over an hour, `current` stems (full tables in `out/families.md`):
+
+| family | worst reverse turn | `k` at junction / peak | sign changes | depth at d=90 |
+|---|---:|---:|---:|---:|
+| C0 cubic (current) | 1.91 deg | 0.42 | 39 | 12.59 px |
+| C1 cubic | 6.54 | **1.00** | 64 | 17.43 |
+| D1 cubic | 1.89 | 0.82 | 17 | 13.16 |
+| F1 Beta | **0.00** | **0.000** | **0** | 13.16 |
+| F2 trapezoid | **0.00** | **0.000** | **0** | 10.09 |
+| F3 raised cosine | **0.00** | **0.000** | **0** | 8.57 |
+| F4 constant | **0.00** | **0.000** | **0** | 13.16 |
+
+In `strong-asym` the cubics get worse (C0 5.41 deg, C1 7.44, D1 6.03) and the F
+families stay at 0.00.
+
+- The cubics' `k` crosses zero 7 to 65 times over an hour depending on rule and
+  stems. None of the F families crosses anywhere, in any stem configuration.
+- The cubics' `k` starts and ends off zero -- a curvature step at the stem
+  junction, and for C1 the curvature *maximum* sits at the junction rather than
+  anywhere near the pivot. F1 approaches zero asymptotically; F2, F3 and F4
+  reach the junctions at exactly zero.
+- C0's depth at quadrature is 12.59 px in *every* stem configuration -- the
+  stem-instability from section 1, visible in one number. Every F family scales
+  with `min(r_h, r_m)`.
+- Silhouettes are close: at the working separations F1 through F4 sit within a
+  pixel or two of D1, so this is not a change of look. `constructions-own-d.svg`
+  shows the compact families on their own dial, where nothing clamps.
+- Depth is continuous: the largest change between adjacent minutes is ~2 px on
+  `current`, which is just the hands moving, and it matches D1's to 3 decimals.
+
+None of this is a recommendation yet -- the visual judgement between F2, F3 and
+F4 (and whether F4's `k` jump matters at this resolution) is the author's.
