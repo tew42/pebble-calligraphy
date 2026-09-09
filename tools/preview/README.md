@@ -87,7 +87,8 @@ triangle A-B-centre.
 - `sheet_curvature.py` -- `k` plotted along the connector for the same seven
   rows. This is the sheet the families actually differ in.
 - `families_report.py` -- the numbers behind them (`--quick` for one hour
-  instead of all 720 positions); writes `out/families.md`.
+  instead of all 720 positions); writes `out/families.md`, whose full-sweep
+  output is committed as `docs/families-measured.md`.
 - `shot.sh` -- rasterize named sheets to PNG so they can be looked at.
 - `render_anim.sh` -- the only part needing an external binary: Chromium
   (`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, overridable with

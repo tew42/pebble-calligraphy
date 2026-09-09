@@ -632,28 +632,31 @@ Sheets: `constructions-current.svg`, `constructions-strong-asym.svg`, the
 matching `-zoom-` pair at 2.6x on the centre, `constructions-own-d.svg`, and
 `curvature-current.svg` / `curvature-strong-asym.svg`.
 
-Swept over an hour, `current` stems (full tables in `out/families.md`):
+Swept over all 720 hand positions and all six stem configurations (full tables
+in [`families-measured.md`](families-measured.md)). On `current` stems:
 
-| family | worst reverse turn | `k` at junction / peak | sign changes | depth at d=90 |
+| family | worst reverse turn | `k` at junction / peak | swerves at | depth at d=90 |
 |---|---:|---:|---:|---:|
-| C0 cubic (current) | 1.91 deg | 0.42 | 39 | 12.59 px |
-| C1 cubic | 6.54 | **1.00** | 64 | 17.43 |
-| D1 cubic | 1.89 | 0.82 | 17 | 13.16 |
-| F1 Beta | **0.00** | **0.000** | **0** | 13.16 |
-| F2 trapezoid | **0.00** | **0.000** | **0** | 10.09 |
-| F3 raised cosine | **0.00** | **0.000** | **0** | 8.57 |
-| F4 constant | **0.00** | **0.000** | **0** | 13.16 |
+| C0 cubic (current) | 1.93 deg | 0.46 | 59% of positions | 12.61 px |
+| C1 cubic | 6.55 | **1.00** | 61% | 17.36 |
+| D1 cubic | 1.91 | 0.82 | 36% | 13.18 |
+| F1 Beta | **0.00** | **0.000** | **0%** | 13.16 |
+| F2 trapezoid | **0.00** | **0.000** | **0%** | 10.12 |
+| F3 raised cosine | **0.00** | **0.000** | **0%** | 8.59 |
+| F4 constant | **0.00** | **0.000** | **0%** | 13.18 |
 
-In `strong-asym` the cubics get worse (C0 5.41 deg, C1 7.44, D1 6.03) and the F
-families stay at 0.00.
+On `strong-asym` the cubics get much worse -- C0 5.41 deg and swerving at 84% of
+positions, C1 7.46 deg at 72%, D1 6.03 deg at 82% -- and every F family stays at
+0.00 deg and 0%.
 
-- The cubics' `k` crosses zero 7 to 65 times over an hour depending on rule and
-  stems. None of the F families crosses anywhere, in any stem configuration.
+- The cubics' `k` changes sign somewhere along the connector at between 12% and
+  84% of hand positions, depending on rule and stems. **None of the F families
+  changes sign at any position, in any stem configuration.**
 - The cubics' `k` starts and ends off zero -- a curvature step at the stem
   junction, and for C1 the curvature *maximum* sits at the junction rather than
   anywhere near the pivot. F1 approaches zero asymptotically; F2, F3 and F4
   reach the junctions at exactly zero.
-- C0's depth at quadrature is 12.59 px in *every* stem configuration -- the
+- C0's depth at quadrature is 12.61 px in *every* stem configuration -- the
   stem-instability from section 1, visible in one number. Every F family scales
   with `min(r_h, r_m)`.
 - Silhouettes are close: at the working separations F1 through F4 sit within a
