@@ -43,16 +43,54 @@ ROWS_OWN = (
 )
 CUBIC_RULES = {"c0": C0, "c1": C1, "d1": D1}
 
+#: Which curvature shape, at matched depth: does a visible constant-radius
+#: section read as a machined fillet?  F3 has none, F2 a third of the hump,
+#: F5 two thirds, F4 all of it.
+ROWS_SHAPE = (
+    ("d1", "D1  cubic  [reference]"),
+    ("f3", "F3  no plateau (raised cosine)"),
+    ("f2", "F2  plateau 1/3 (trapezoid)"),
+    ("f5", "F5  plateau 2/3 (taper 1/6)"),
+    ("f4", "F4  plateau 3/3 (pure arc)"),
+)
+
+#: The recommendation, against the two it is between.
+ROWS_FINAL = (
+    ("d1", "D1  cubic (round-2 lead)"),
+    ("f4", "F4  constant k -- pure arc, reads machined"),
+    ("f3", "F3  raised cosine -- swoopiest, but runs short past d=83"),
+    ("f6", "F6  adaptive taper: the smoothest k that reaches the depth"),
+)
+
+#: How much of the connector is straight: the exponent in d = min(r) sin(d/2)^p.
+ROWS_SWOOP = (
+    ("d1", "D1  cubic  [reference]"),
+    ("f3@1.0", "F3  p = 1.0   (matches D1's depth rule)"),
+    ("f3@0.75", "F3  p = 0.75"),
+    ("f3@0.5", "F3  p = 0.5   (swoopier, but pops off the centre near overlap)"),
+)
+
 
 def build(kind, hour, minute, face, stems):
+    """`kind` is a cubic key, or a hump key with optional `*` (its own tangent
+    rule) or `@p` (tangent rule d = min(r) sin(delta/2)^p)."""
     if kind in CUBIC_RULES:
         return G.build_centerline(hour, minute, CUBIC_RULES[kind].rule, face, stems)
     if kind == "f1":
         return CV.build_beta_centerline(hour, minute, D1.rule, face, stems)
+    if kind == "f6":
+        return CV.build_compact_centerline(hour, minute, CV.adaptive_shape,
+                                           D1.rule, face, stems)
+    power = None
+    if "@" in kind:
+        kind, raw = kind.split("@")
+        power = float(raw)
     own = kind.endswith("*")
-    return CV.build_compact_centerline(hour, minute,
-                                       CV.HUMP_SHAPES[kind.rstrip("*")],
-                                       None if own else D1.rule, face, stems)
+    return CV.build_compact_centerline(
+        hour, minute, CV.HUMP_SHAPES[kind.rstrip("*")],
+        None if (own or power is not None) else D1.rule, face, stems,
+        tangent_rule=(None if power is None
+                      else CV.tangent_length_power(power)))
 
 
 def turns(points):
@@ -83,6 +121,11 @@ def annotate(cl, kind, centre):
         note += "  FOLD" if cl.degenerate else f"  nu={cl.concentration:.3g}"
     elif kind[0] == "f":
         note += f"  d={cl.tangent_length:.0f}"
+        if kind == "f6":
+            import math as _m
+            rho = CV.adaptive_taper(_m.acos(max(-1.0, min(1.0,
+                                     cl.context.radial_dot))))
+            note += f"  taper={rho:.2f}"
         if cl.clamped:
             note += "!"
     return note
@@ -173,6 +216,18 @@ if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     for name in ("current", "strong-asym"):
         sheet([name], os.path.join(OUT, f"constructions-{name}.svg"))
+        sheet([name], os.path.join(OUT, f"final-{name}.svg"), rows=ROWS_FINAL,
+              title="The recommendation: F6 adaptive taper")
+        sheet([name], os.path.join(OUT, f"final-zoom-{name}.svg"),
+              rows=ROWS_FINAL, times=ZOOM_TIMES, zoom=2.6,
+              title="The recommendation, 2.6x on the centre")
+        sheet([name], os.path.join(OUT, f"shapes-{name}.svg"), rows=ROWS_SHAPE,
+              title="Which curvature shape, at matched depth")
+        sheet([name], os.path.join(OUT, f"shapes-zoom-{name}.svg"),
+              rows=ROWS_SHAPE, times=ZOOM_TIMES, zoom=2.6,
+              title="Which curvature shape, 2.6x on the centre")
+        sheet([name], os.path.join(OUT, f"swoop-{name}.svg"), rows=ROWS_SWOOP,
+              title="How much of the connector is straight: the exponent p")
         sheet([name], os.path.join(OUT, f"constructions-zoom-{name}.svg"),
               times=ZOOM_TIMES, zoom=2.6,
               title="Near overlap, 2.6x on the centre: d = 5.5 to 44 degrees")

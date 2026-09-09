@@ -89,6 +89,9 @@ triangle A-B-centre.
 - `families_report.py` -- the numbers behind them (`--quick` for one hour
   instead of all 720 positions); writes `out/families.md`, whose full-sweep
   output is committed as `docs/families-measured.md`.
+- `sheet_stemspace.py` -- D1's defect over the whole (r_h, r_m) space, which
+  is D1's entire design space: its connector reads the stems only through the
+  two inner radii.
 - `shot.sh` -- rasterize named sheets to PNG so they can be looked at.
 - `render_anim.sh` -- the only part needing an external binary: Chromium
   (`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, overridable with

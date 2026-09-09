@@ -411,7 +411,113 @@ F4 = HumpShape("f4", "F4 constant k (straight-arc-straight)",
                lambda t: 0.0 if t <= 0.0 or t >= 1.0 else 1.0,
                smooth_join=False, exact_gs=_arc_gs)
 
-HUMP_SHAPES = {shape.key: shape for shape in (F2, F3, F4)}
+def tukey_shape(rho: float, key=None, label=None) -> HumpShape:
+    """Cosine-tapered plateau: raised-cosine ramp over the first and last
+    `rho` of the hump, flat maximum between.
+
+    This is the one-parameter family whose endpoints are already in the roster:
+    `rho = 0.5` *is* F3 (the taper meets in the middle and the plateau
+    vanishes), and `rho -> 0` is F4 (the taper vanishes and only the plateau is
+    left).  Both `k` and `k'` are continuous for any `rho > 0`, because a
+    raised-cosine ramp has zero slope at both of its own ends -- so unlike F2's
+    trapezoid there are no corners in `k'` either.
+
+    The taper fraction trades smoothness against reachable depth: a flatter top
+    turns more of the hump at a lower peak curvature, which buys depth, and F4
+    is the limit of that.  It is a shape constant, fixed once, not a per-position
+    dial.
+    """
+    def phi(t: float) -> float:
+        if t <= 0.0 or t >= 1.0:
+            return 0.0
+        if rho <= 0.0:
+            return 1.0
+        if t < rho:
+            return 0.5 * (1.0 - math.cos(math.pi * t / rho))
+        if t > 1.0 - rho:
+            return 0.5 * (1.0 - math.cos(math.pi * (1.0 - t) / rho))
+        return 1.0
+
+    return HumpShape(key or f"f5r{rho:.3f}",
+                     label or f"F5 cosine-tapered plateau, taper {rho:.2f}",
+                     phi, breaks=(rho, 1.0 - rho))
+
+
+def _bracket_for(rho: float, delta: float) -> float:
+    """Depth per unit tangent length, for a cosine-tapered plateau of taper
+    `rho` at separation `delta` (radians)."""
+    half_cos, half_sin = math.cos(0.5 * delta), math.sin(0.5 * delta)
+    turn = math.pi - delta
+    if turn < 1e-9:
+        return half_cos
+    if rho <= 0.0:
+        g, sigma = _arc_gs(turn)
+    else:
+        unit = _hump_unit(tukey_shape(rho), turn)
+        if unit is None:
+            return half_cos
+        _, _, g, sigma = unit
+    return half_cos - 2.0 * half_sin * sigma / g
+
+
+_taper_cache: dict = {}
+
+
+def adaptive_taper(delta: float) -> float:
+    """The largest cosine taper whose depth still reaches the corner fillet.
+
+    This is the rule that removes the last free constant.  A cosine-tapered
+    plateau trades two things against each other: a long taper (`rho -> 0.5`,
+    no plateau at all) puts the whole turn into one smoothly-varying bend, which
+    is the shape that reads as drawn rather than machined and which keeps the
+    largest fraction of the connector curved; a short taper (`rho -> 0`, all
+    plateau) is a constant-radius arc, which is geometrically efficient and can
+    always reach the required depth but reads as a fillet.  So: *take the
+    smoothest taper that still reaches the depth.*  No constant to pick.
+
+    The condition is `bracket(rho, delta) = bracket(0, delta) sin(delta/2)`,
+    and `min(r_h, r_m)` cancels from both sides -- so `rho(delta)` is a
+    universal function of the separation alone, independent of the stems.  It
+    sits at 0.5 (pure raised cosine, zero plateau) for every separation out to
+    about 83 degrees, and only grows a plateau beyond that, where the peak
+    curvature has already fallen below a 1/20 px radius and the difference
+    between an arc and a cosine cannot be seen.
+    """
+    key = round(delta, 9)
+    hit = _taper_cache.get(key)
+    if hit is not None:
+        return hit
+    need = _bracket_for(0.0, delta) * math.sin(0.5 * delta)
+    if _bracket_for(0.5, delta) >= need:
+        _taper_cache[key] = 0.5
+        return 0.5
+    lo, hi = 0.0, 0.5
+    for _ in range(44):
+        mid = 0.5 * (lo + hi)
+        if _bracket_for(mid, delta) >= need:
+            lo = mid
+        else:
+            hi = mid
+    _taper_cache[key] = lo
+    return lo
+
+
+def adaptive_shape(ctx: G.PivotContext) -> HumpShape:
+    """`build_compact_centerline`'s shape argument, as a callable."""
+    delta = math.acos(max(-1.0, min(1.0, ctx.radial_dot)))
+    rho = adaptive_taper(delta)
+    return F4 if rho <= 1e-6 else tukey_shape(rho)
+
+
+#: The principled taper: the smoothest cosine-tapered plateau whose depth stays
+#: within one pixel of the exact corner fillet at every hand position and in
+#: every stem configuration (measured: 0.42 to 0.96 px, only past delta ~ 118,
+#: where the depth itself is shrinking toward zero).  A larger taper loses more
+#: than a pixel; a smaller one gains nothing anyone can see.
+F5 = tukey_shape(1.0 / 6.0, key="f5",
+                 label="F5 cosine-tapered plateau (taper 1/6)")
+
+HUMP_SHAPES = {shape.key: shape for shape in (F2, F3, F4, F5)}
 
 
 _hump_cache: dict = {}
@@ -520,13 +626,39 @@ def tangent_length_rule(ctx: G.PivotContext) -> float:
     return min(ctx.hour_inner, ctx.minute_inner) * ctx.half_sin
 
 
+def tangent_length_power(power: float):
+    """d = min(r_h, r_m) sin(delta/2)^power -- the dial, with its one exponent.
+
+    `power = 1` is `tangent_length_rule` and reproduces D1's depth exactly.
+    `power = 0` puts `d` at its ceiling `min(r_h, r_m)`, so the shorter stem's
+    straight run vanishes at every separation and the connector is one hump
+    plus whatever the longer stem has left over -- the deepest, roundest corner
+    the family admits, and the round-2 candidate DC.
+
+    This is the axis that controls how much of the connector is *straight*.
+    Compact support buys exact zero curvature at the stem junctions by putting
+    genuinely straight radial runs there, and at `power = 1` those runs are
+    about 40% of the connector at quadrature.  Lowering the exponent trades
+    that straightness for depth.  It is one exponent, and `sin(delta/2)` was
+    itself a chosen shape, so this is not a new kind of freedom -- it is the
+    freedom that was already there, made visible.
+    """
+    def rule(ctx: G.PivotContext) -> float:
+        base = min(ctx.hour_inner, ctx.minute_inner)
+        if power == 0.0:
+            return base
+        return base * ctx.half_sin ** power
+    return rule
+
+
 def build_compact_centerline(
     hours: int, minutes: int,
-    shape: HumpShape,
+    shape,                 # HumpShape, or a callable(ctx) -> HumpShape
     depth_rule=None,
     face: G.Face = G.Face(),
     stems: G.Stems = G.DEFAULT_STEMS,
     connector_samples: int = G.CONNECTOR_SEGMENTS,
+    tangent_rule=None,
 ) -> BetaCenterline:
     """Straight-in / single-hump / straight-out connector.  Closed form.
 
@@ -535,7 +667,8 @@ def build_compact_centerline(
     family's own rule (`tangent_length_rule`) sets the tangent length directly
     and the depth follows from the shape.
     """
-    rule = depth_rule or G.CANDIDATES_BY_KEY["d1-arc-sin"].rule
+    rule = (depth_rule if tangent_rule is None else None) \
+        or G.CANDIDATES_BY_KEY["d1-arc-sin"].rule
     reference = G.build_centerline(hours, minutes, rule, face, stems)
     ctx = reference.context
     centre = ctx.center
@@ -551,13 +684,17 @@ def build_compact_centerline(
     r_h, r_m = ctx.hour_inner, ctx.minute_inner
     d_max = min(r_h, r_m)
 
+    if callable(shape):
+        shape = shape(ctx)
     unit = _hump_unit(shape, abs(turn)) if abs(turn) > 1e-9 else None
     bracket = None
     if unit is not None:
         _, _, g, sigma = unit
         bracket = ctx.half_cos - 2.0 * ctx.half_sin * sigma / g
 
-    if depth_rule is None:
+    if tangent_rule is not None:
+        d = tangent_rule(ctx)
+    elif depth_rule is None:
         d = tangent_length_rule(ctx)
     elif bracket is None or bracket <= 1e-9:
         d = 0.0

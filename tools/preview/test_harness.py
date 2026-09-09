@@ -411,6 +411,85 @@ def test_beta_resolves_its_curvature_spike() -> None:
               / CV.FINAL_STEPS))
 
 
+def test_adaptive_taper_is_stem_independent() -> None:
+    """rho(delta) is a universal curve: min(r_h, r_m) cancels from the rule."""
+    print("the adaptive taper schedule depends on delta alone")
+    face = G.Face()
+    for minute in range(0, 60, 4):
+        rho = None
+        for stems in G.STEM_CONFIGS:
+            cl = CV.build_compact_centerline(
+                12, minute, CV.adaptive_shape,
+                G.CANDIDATES_BY_KEY["d1-arc-sin"].rule, face, stems)
+            delta = math.acos(max(-1.0, min(1.0, cl.context.radial_dot)))
+            here = CV.adaptive_taper(delta)
+            if rho is None:
+                rho = here
+            elif abs(here - rho) > 1e-12:
+                check(False, f"minute {minute}: taper varies with the stems")
+                return
+    check(True, "identical across all six stem configurations")
+
+
+def test_adaptive_taper_keeps_the_cosine_where_it_shows() -> None:
+    """The plateau only appears where the curvature is too slack to see."""
+    print("the plateau appears only where no curvature is visible")
+    onset = min(d for d in range(1, 180)
+                if CV.adaptive_taper(math.radians(d)) < 0.5 - 1e-9)
+    check(onset > 80, f"pure raised cosine, no plateau, out to delta = {onset - 1}")
+    # Beyond the onset the shape drifts toward a constant-curvature arc, which
+    # only matters if the arc is tight enough to read as one.  Plateau length
+    # and tightness are anti-correlated by construction: the shape only grows a
+    # long plateau where the turn has already slackened.
+    face, stems = G.Face(), G.DEFAULT_STEMS
+    rule = G.CANDIDATES_BY_KEY["d1-arc-sin"].rule
+    tightest = 0.0
+    first = None
+    for hour, minute in G.ALL_TIMES:
+        delta = G.separation_degrees(hour, minute)
+        if CV.adaptive_taper(math.radians(delta)) > 1.0 / 3.0:
+            continue          # plateau under a third of the hump
+        first = delta if first is None else min(first, delta)
+        cl = CV.build_compact_centerline(hour, minute, CV.adaptive_shape,
+                                         rule, face, stems)
+        tightest = max(tightest, max(abs(k) for k in cl.curvatures))
+    radius = 1.0 / tightest if tightest > 0.0 else float("inf")
+    check(first is not None and first > 90.0,
+          f"plateau reaches a third of the hump only past delta = {first:.0f}")
+    check(radius > 30.0,
+          f"and the arc is never tighter than {radius:.0f} px radius there")
+
+
+def test_adaptive_taper_meets_every_requirement() -> None:
+    print("F6 across all 720 positions and all six stem configurations")
+    face = G.Face()
+    rule = G.CANDIDATES_BY_KEY["d1-arc-sin"].rule
+    worst_depth = worst_rev = worst_junction = worst_overlap = 0.0
+    clamps = 0
+    for stems in G.STEM_CONFIGS:
+        for hour, minute in G.ALL_TIMES:
+            cl = CV.build_compact_centerline(hour, minute, CV.adaptive_shape,
+                                             rule, face, stems)
+            ref = G.build_centerline(hour, minute, rule, face, stems)
+            target = G.norm(G.sub(ref.pivot, ref.context.center))
+            worst_depth = max(worst_depth, abs(cl.exact_depth - target))
+            turn = _turn_series(cl.points)
+            total = sum(turn)
+            worst_rev = max(worst_rev, sum(
+                abs(v) for v in turn
+                if abs(v) > 0.02 and (v > 0) != (total > 0)))
+            worst_junction = max(worst_junction, abs(cl.curvatures[0]),
+                                 abs(cl.curvatures[-1]))
+            if G.separation_degrees(hour, minute) < 1e-9:
+                worst_overlap = max(worst_overlap, cl.exact_depth)
+            clamps += cl.clamped
+    check(worst_depth < 1e-6, f"depth matches D1 to {worst_depth:.2e} px")
+    check(worst_rev < 0.01, f"reverse turn {worst_rev:.3f} deg")
+    check(worst_junction == 0.0, "junction curvature exactly zero")
+    check(worst_overlap == 0.0, "folds exactly through the centre at overlap")
+    check(clamps == 0, "never runs out of stem")
+
+
 def test_animation_covers_the_hour() -> None:
     """The animated hour has to pass through both accepted degeneracies, or it
     is not exercising the interesting part of the design."""
@@ -547,6 +626,9 @@ def main() -> int:
         test_overlap_folds_through_the_centre,
         test_beta_depth_tracks_its_target,
         test_beta_resolves_its_curvature_spike,
+        test_adaptive_taper_is_stem_independent,
+        test_adaptive_taper_keeps_the_cosine_where_it_shows,
+        test_adaptive_taper_meets_every_requirement,
         test_animation_covers_the_hour,
         test_animation_frames_are_wellformed,
         test_gif_writer_roundtrip,

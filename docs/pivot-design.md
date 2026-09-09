@@ -715,3 +715,155 @@ an artifact of these four shapes. Given that all four already reach 0.00 deg
 reverse turn in `strong-asym` -- the case asymmetry was meant to fix -- there is
 no measured problem left for asymmetric `k` to solve. If it is wanted for its
 own sake, the biarc is the cheap version and it costs a third `k` jump.
+
+# Round 4: the verdict
+
+## 24. Two claims from round 3 that visual review overturned
+
+**"F5, the small cosine taper, is the principled choice."** Wrong, twice over.
+It carries a taper fraction, which is exactly the kind of tuned constant this
+whole exercise exists to remove -- the same objection as C0's four constants.
+And it optimises the wrong quantity: a *small* taper maximises the plateau, so
+F5 has more constant-radius arc than F2, not less. If what reads as machined
+about F4 is its visible constant-radius section, F5 moves toward the defect.
+
+**"F1 is a research instrument, not something to ship."** Also wrong. F1's
+solve is a function of `delta` alone once the stems are fixed, so the whole
+nested bisection can be precomputed. Tabulating the connector in a
+normalised frame and interpolating: 17 slices (11 degrees apart) hold it to
+**0.43 px**, 12 slices to 0.63 px. That is about 2 KB of constant data and 31
+lerps plus one similarity transform per redraw -- cheaper than the two 4x4
+Gauss-Jordan solves in `main.c` today. The honest objection to F1 is not cost
+but that the watch would no longer *know* the construction, only replay a table
+keyed to one stem configuration.
+
+## 25. Both curvature discontinuities are invisible; the reverse bend is not
+
+Measured as departure from the tangent line over one pixel of arc, at
+`delta = 90`:
+
+| | k at the join | radius | departure |
+|---|---:|---:|---:|
+| D1's step at the stem junction, `current` | 0.0065 | 155 px | 0.003 px |
+| D1's step, `strong-asym` | 0.0161 | 62 px | 0.008 px |
+| F4's jump at the tangency, `current` | 0.0310 | 32 px | 0.016 px |
+| F4's jump, `strong-asym` | 0.0465 | 21 px | 0.023 px |
+
+All sub-pixel by two orders of magnitude, on a face with unantialiased fills.
+So `k`-continuity, taken by itself, is a mathematical property here rather than
+a visible one -- and what reads as "forced" about F4 cannot be the jump. The
+one defect in this whole exercise that *is* visible is the reverse bend, worth
+1.9 to 6.8 degrees of reverse turn and up to 3.4 px of separation between D1
+and a monotone-curvature construction, and it belongs exclusively to the
+prescribed-pivot cubics.
+
+## 26. What actually makes D1 look swoopier
+
+Not a gentler bend: at matched depth D1's peak curvature is 0.048 against F5's
+0.031 -- **55% tighter**. What differs is how much of the connector is curved at
+all. Compact support buys exact zero curvature at the stem junctions by putting
+genuinely straight radial runs there, and those runs are a large share of the
+connector:
+
+| shape at matched depth | free constant? | d=38 | d=66 | d=90 | d=115 |
+|---|---|---:|---:|---:|---:|
+| D1 cubic | four | 100% | 100% | 100% | 100% |
+| F3 raised cosine | none | 26% | 65% | 90% | 90% |
+| triangle (double clothoid) | none | 23% | 58% | 88% | 90% |
+| F2 trapezoid, plateau 1/3 | the plateau | 21% | 54% | 82% | 90% |
+| F5 taper 1/6 | the taper | 19% | 46% | 70% | 89% |
+| F4 constant | none | 16% | 39% | 59% | 75% |
+
+D1 is 100% curved because its `k` is *nonzero* at the junctions -- that is the
+same fact, seen from the other side. And the two cannot both be had: reaching
+the centre at overlap means travelling the whole of `r_h` inward and `r_m`
+outward, and with `k = 0` at the junctions and `k` single-signed, the only way
+to do that is with near-straight radial runs. **Near overlap the straight runs
+are forced by the overlap requirement itself, not chosen.**
+
+The obvious escape -- just make it deeper, `d = min(r) sin(delta/2)^p` with
+`p < 1` -- does not work. Lowering the exponent pops the curve off the centre
+one minute after overlap:
+
+| p | 12:00 | 12:01 | 12:02 |
+|---|---:|---:|---:|
+| 1.00 | 0.00 | 1.96 | 3.57 |
+| 0.75 | 0.00 | 4.19 | 6.42 |
+| 0.50 | 0.00 | 8.95 | 11.54 |
+| D1 | 0.00 | 2.06 | 3.92 |
+
+`sin(delta/2)` is doing real work, and the 2 px overlap spec essentially pins
+`p = 1`. Swoopiness has to come from the *shape*, not from the depth.
+
+## 27. The trade, and the rule that removes it
+
+Shape choice is a single monotone trade -- swoopier shapes reach less depth,
+and run out of stem sooner when driven to the fillet depth:
+
+| shape | k' continuous | runs short past | worst shortfall |
+|---|---|---:|---:|
+| F3 raised cosine | yes | delta 83 | 3.0 px |
+| triangle | no (corners in `k'`) | delta 92 | 2.3 px |
+| F2 trapezoid 1/3 | no | delta 99 | 1.7 px |
+| F5 taper 1/6 | yes | delta 119 | 0.8 px |
+| F4 constant | no (`k` jumps) | never | 0 |
+
+Which is resolved by not choosing at all. The cosine-tapered plateau is a
+one-parameter family with F3 (`rho = 0.5`, no plateau) and F4 (`rho = 0`, all
+plateau) as its two endpoints, and `k`, `k'` both continuous for any
+`rho > 0`. So state the rule as a *criterion*:
+
+> **F6: take the smoothest taper that still reaches the depth.**
+
+The condition is `bracket(rho, delta) = bracket(0, delta) sin(delta/2)`, and
+`min(r_h, r_m)` cancels from both sides -- so `rho(delta)` is a **universal
+function of the separation alone, independent of the stems**. Measured:
+
+- `rho = 0.5` -- a pure raised cosine, zero plateau -- for every separation
+  **out to delta 82**, which is where the bend is actually visible
+- a plateau reaches a third of the hump only past **delta 96**, and the arc is
+  never tighter than **35 px radius** there; plateau length and tightness are
+  anti-correlated by construction
+- `rho -> 0` only as opposition is approached, where peak `k` has fallen to
+  0.0008 (a 1280 px radius on a 200 px face)
+
+Swept over all 720 positions in all six stem configurations: depth matches D1's
+rule to **0 px**, reverse turn **0.00 deg**, curvature at both stem junctions
+**exactly zero**, depth at overlap **exactly zero**, and it never runs out of
+stem. It carries no free constant, no blending, and no per-stem tuning.
+
+Cost: `rho(delta)` is a universal table (about 32 entries, computed once for
+all time rather than per design), then one pass over the hump for `g`, one
+division for `d`, and the placement. No linear solve, no root find at runtime,
+no failure mode -- cheaper than `main.c` today, which does two 4x4 solves plus
+a validity check and a Tikhonov retry.
+
+## 28. D1's own design space, for completeness
+
+D1's connector reads the stems only through `r_h` and `r_m`; the hand tips do
+not enter it. Sweeping both from 0.10 to 0.90 of the face radius confirms the
+defect is **exactly scale-invariant** -- identical to two decimals along any ray
+`r_m/r_h = const` -- and symmetric under swapping the two, so it depends only on
+`|log(r_m/r_h)|`:
+
+| `r_m/r_h` | reversed `k` lobe (% of peak) | worst reverse turn |
+|---:|---:|---:|
+| 1.00 | 0.55% | 1.68 deg |
+| 1.10 (or 0.91) | 1.32% | 1.80 |
+| 1.20 (**current**) | 2.63% | 1.91 |
+| 1.31 (or 0.76) | 4.60% | 2.06 |
+| 1.50 (or 0.67) | 8.69% | 2.77 |
+| 2.00 (or 0.50) | 19.6% | 4.91 |
+| 2.50 (or 0.40) | 27.9% | 6.50 |
+
+So: **the region with no reversed curvature is empty.** The reverse turn never
+falls below 1.68 degrees anywhere in the space, including at perfect symmetry.
+The usable bands, if D1 is kept:
+
+- reversed lobe under 1% of peak: `r_m/r_h` within about **[0.93, 1.07]**
+- under 5%: within about **[0.75, 1.33]**
+
+The current 0.45 / 0.54 sits at ratio 1.20, giving a 2.6% lobe -- comfortably
+inside the 5% band with roughly 10% of headroom before it leaves. The W
+flattening, by contrast, is absent everywhere in the space: D1 fixed that
+outright, and the reversed lobe is its only remaining defect.

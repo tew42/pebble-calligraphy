@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import geometry as G
 import curvature as CV
 import svgcanvas as S
-from sheet_constructions import ROWS, CUBIC_RULES, TIMES, D1
+from sheet_constructions import (ROWS, ROWS_SHAPE, ROWS_FINAL,
+                                 CUBIC_RULES, TIMES, D1)
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 SAMPLES = 400
@@ -43,11 +44,21 @@ def profile(kind, hour, minute, face, stems):
 
     if kind == "f1":
         cl = CV.build_beta_centerline(hour, minute, D1.rule, face, stems, SAMPLES)
+    elif kind == "f6":
+        cl = CV.build_compact_centerline(hour, minute, CV.adaptive_shape,
+                                         D1.rule, face, stems, SAMPLES)
     else:
+        power = None
+        if "@" in kind:
+            kind, raw = kind.split("@")
+            power = float(raw)
         own = kind.endswith("*")
         cl = CV.build_compact_centerline(
             hour, minute, CV.HUMP_SHAPES[kind.rstrip("*")],
-            None if own else D1.rule, face, stems, SAMPLES)
+            None if (own or power is not None) else D1.rule, face, stems,
+            SAMPLES,
+            tangent_rule=(None if power is None
+                          else CV.tangent_length_power(power)))
     lo, hi = G.HOUR_STEM_SEGMENTS, len(cl.points) - G.MINUTE_STEM_SEGMENTS
     pts = cl.points[lo:hi]
     return pts, [abs(k) for k in cl.curvatures[:len(pts)]]
@@ -82,13 +93,13 @@ def cell(cv, ox, oy, w, h, kind, hour, minute, face, stems, index):
             fill="#f95d6a" if crossings else S.DIM)
 
 
-def sheet(stem_names, path):
+def sheet(stem_names, path, rows=ROWS, title=None):
     face = G.Face()
     cw, ch, gap, left, top = 168, 92, 8, 232, 138
     cv = S.Canvas(left + len(TIMES) * (cw + gap) + 16,
-                  top + len(stem_names) * (len(ROWS) * (ch + gap) + 34) + 10)
-    cv.text(24, 32, "Curvature along the connector", size=17, fill=S.LABEL,
-            weight="600")
+                  top + len(stem_names) * (len(rows) * (ch + gap) + 34) + 10)
+    cv.text(24, 32, title or "Curvature along the connector", size=17,
+            fill=S.LABEL, weight="600")
     cv.text(24, 52, "Signed k from the hour stem junction (left) to the minute "
             "stem junction (right); grey line is zero, vertical scale is "
             "per-cell.", size=10, fill=S.DIM)
@@ -109,7 +120,7 @@ def sheet(stem_names, path):
         stems = G.STEMS_BY_NAME[name]
         cv.text(24, y - 26, f"stems: {name}   {stems.describe()}", size=11,
                 fill=S.PIVOT, weight="600")
-        for kind, label in ROWS:
+        for kind, label in rows:
             cv.text(24, y + 16, label, size=10, fill=S.LABEL, weight="600")
             for col, (hour, minute) in enumerate(TIMES):
                 cell(cv, left + col * (cw + gap), y, cw, ch, kind, hour, minute,
@@ -125,3 +136,9 @@ if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     for name in ("current", "strong-asym"):
         sheet([name], os.path.join(OUT, f"curvature-{name}.svg"))
+        sheet([name], os.path.join(OUT, f"curvature-final-{name}.svg"),
+              rows=ROWS_FINAL,
+              title="Curvature: the recommendation against its neighbours")
+        sheet([name], os.path.join(OUT, f"curvature-shapes-{name}.svg"),
+              rows=ROWS_SHAPE,
+              title="Curvature: how much of the hump is a constant-radius arc")
