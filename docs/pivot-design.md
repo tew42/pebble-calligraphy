@@ -1283,3 +1283,145 @@ would give it a hidden ordering requirement -- valid only after
 `update_cumulative_lengths()` -- in exchange for 96 square roots a minute. That
 is a worse trade than the raw numbers suggest, and it is the reason to leave it
 alone rather than the arithmetic.
+
+# Round 8: the envelope
+
+## 37. What the envelope is made of
+
+The stroke is the centerline offset by half a width profile, filled as a
+98-point polygon. Six constants shape it, plus one that is a rendering
+correction rather than an aesthetic choice:
+
+| | | |
+|---|---:|---|
+| `HOUR_TIP_WIDTH` | 3.0 px | width at the hour tip |
+| `HOUR_BODY_WIDTH` | 6.0 px | the swell just inside it |
+| `MIDDLE_WIDTH` | 3.0 px | at the pivot |
+| `MINUTE_TIP_WIDTH` | 1.0 px | at the minute tip |
+| `HOUR_SWELL_POSITION` | 0.05 | where the swell peaks, as a fraction of total arc |
+| `PRESSURE_VARIATION` | 0.20 | a brush-pressure asymmetry about the pivot |
+| `OUTLINE_WIDTH_COMPENSATION` | 1.0 px | keep: see below |
+
+Three passes draw it, and reading only the first is misleading. The fill is
+inset by `OUTLINE_WIDTH_COMPENSATION` so the antialiased outline pass puts that
+pixel back, which means **the width profile is the composite ink extent and the
+filled polygon is one pixel narrower.** At the minute tip the profile is 1 px,
+so the fill has *zero* width there and the minute hand is carried entirely by
+the outline plus the hard one-pixel core line. That is why the minute hand is a
+hairline: it is the pen's thinnest possible mark, one pixel, by construction.
+
+Sheet: `envelope.svg` and `envelope-zoom.svg`, rendered from `main.c`'s own
+polygon rather than a re-port.
+
+## 38. Three things measured, one of which is a no-op
+
+**`PRESSURE_VARIATION` does nothing.** The term is
+`w *= 1 + 0.20 * 4p(1-p) * (pivot_position - p)`. Over all 720 positions and
+every sample its multiplier stays between 0.945 and 1.026, and **the largest
+change it makes to any width is 0.133 px.** On a face with unantialiased fills
+that cannot survive rasterization. At the hour stem junction it is constant to
+four decimal places across the whole day (1.0216 to 1.0219). It costs a
+constant and buys nothing measurable: delete it, or raise it until it is
+visible and decide whether the asymmetry is wanted. As written it is neither.
+
+**The anti-blob term is inert, because it measures the wrong distance.**
+`branch_clearance = 2 min(r_h, r_m) sin(delta/2)` is the chord between the two
+*stem ends* -- about 45 px at `delta = 30` -- and it is compared against
+`MIDDLE_WIDTH`, 3 px. So `center_width_scale` saturates at 1 for
+`delta > 3.5` and is doing nothing at **705 of 720 positions.** What it was
+presumably meant to prevent is happening anyway, further out than it reaches:
+
+| | extent |
+|---|---|
+| ink collides with a non-adjacent part of the stroke | out to `delta = 18.5` (75 of 720 positions) |
+| the fill polygon's inner offset inverts (cusps) | out to `delta = 24.5` (92 of 720) |
+| `center_width_scale` still below 1 | only `delta <= 3.5` |
+
+The closest approach between the two *branches* is nothing like the chord
+between the stem ends, which is why the calibration misses.
+
+**The swell drifts with the time.** `HOUR_SWELL_POSITION` is a fraction of
+*total* sweep arc length, and that length swings 15% over the hour (130.8 to
+150.0 px). So the swell peak slides between 6.54 and 7.50 px from the hour tip,
+across 6% of the hour stem's 15 px. Small, but it is the same class of mistake
+as the pivot rule the face radius used to anchor: a feature of one hand
+positioned by a length belonging to the whole sweep. Anchoring it to the hour
+stem's own length makes it time-invariant and costs nothing.
+
+## 39. Two hypotheses of mine that measurement killed
+
+Recorded because both were plausible and both were wrong.
+
+**"The stems waste samples; reallocating them by arc length would smooth the
+outline."** Backwards. The connector's 30 samples are placed uniformly in the
+Hermite parameter, not in arc length, so the arc-length spacing within it
+varies by up to 39x at `delta = 5.5` -- and the samples bunch exactly where the
+Hermite speed is low, which is where the curvature is highest. That is the right
+place for them. At the worst well-conditioned position the step is 0.99 px and
+the inner-offset sagitta 0.116 px; arc-length-even spacing there would be
+2.73 px and 0.884 px, **7.6 times worse.** Uniform-in-`t` is doing useful work.
+
+**"49 samples may be too few for the outline, whose curvature the offset
+amplifies."** No: the worst inner-offset sagitta anywhere the offset is
+well conditioned is **0.116 px**. `CONNECTOR_SEGMENTS = 30` is not a
+bottleneck. (A naive version of this metric reports 13.9 px, but that is the
+formula dividing by a near-zero inner radius right at the cusp condition, which
+is the cusp being rediscovered, not faceting.)
+
+## 40. What could actually be de-parametrized
+
+**The four widths are already a ratio ladder, and only need saying so.**
+In units of the smallest: minute tip 1, middle 3, hour tip 3, hour body 6. So
+`MIDDLE_WIDTH == HOUR_TIP_WIDTH` and `HOUR_BODY_WIDTH == 2 * MIDDLE_WIDTH`
+exactly. That is **one** parameter -- a one-pixel pen unit -- and three small
+integers, not four independent floats. Naming it that way removes most of the
+apparent arbitrariness without changing a pixel, and it makes the design
+intent legible: the stroke runs from six pen units at the hour body down to one
+at the minute tip.
+
+**The derived ceiling, and why it is not a drop-in.** The structural analogue of
+`arc_apex_ceiling` exists here. The room available at any sample is its distance
+to the nearest non-adjacent part of the centerline,
+
+    clearance(s) = min over |t - s| > eps of |P(s) - P(t)|
+
+and capping `w(s) <= clearance(s)` makes self-overlap impossible: if
+`w(s) <= clearance(s)` everywhere then for any pair,
+`(w(s) + w(t))/2 <= (clearance(s) + clearance(t))/2 <= |P(s) - P(t)|`. Adding
+`w(s) <= 2 R(s)` also rules out the inner-offset cusp. Both are constant-free
+and derived from the construction, and together they would replace
+`center_width_scale` with something that actually binds where the problem is.
+
+But it cannot be applied as a hard cap, because at overlap `clearance` goes to
+zero and the design *requires* the fold to overlap itself -- capping there would
+make the stroke vanish exactly where it should be a single confident mark. So
+the ceiling is a diagnostic and a bound to spend, not a limiter, and how to
+spend it is a design decision rather than a derivation.
+
+**The nib model is the textbook answer and it is wrong here.** A broad-edged
+pen gives `w = W |sin(theta - theta_nib)|`, which would replace the whole
+profile with two parameters and generate thick-and-thin from the geometry. On a
+clock it fails: the hands rotate, so the weight depends on absolute direction
+and the minute hand would pass through the nib's null twice an hour, nearly
+vanishing each time. A watchface cannot have its minute hand disappear at 07
+and 37 past. Worth stating explicitly because it is the first idea anyone has.
+
+## 41. The open question, which is a design decision
+
+Through roughly `delta = 2` to `20` the two arms are *partially* merged: close
+enough that the ink joins, far enough apart that a waist shows between two
+lobes. The sheet shows it clearly at 12:02 and 12:03. That is arguably the least
+attractive state available -- neither a clean fold nor two clean arms -- and it
+is currently reached by default rather than by decision, because the term meant
+to govern it stopped acting at `delta = 3.5`.
+
+The choice is which way to resolve it:
+
+- **merge harder** -- let the width grow through that band so it reads as one
+  confident stroke doubling back, which is what a broad pen actually does in a
+  hairpin, or
+- **separate cleanly** -- spend the clearance ceiling to thin both arms through
+  the band so two strokes read distinctly.
+
+Either is defensible and they look quite different. This is where "natural" gets
+decided, and it is not a question measurement can settle.

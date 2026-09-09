@@ -66,6 +66,17 @@ class Canvas:
             f'stroke-linejoin="round" opacity="{fmt(opacity)}"{extra}/>'
         )
 
+    def polygon(self, points, fill=INK, stroke="none", stroke_width=0.0,
+                opacity=1.0) -> None:
+        """A closed filled path -- for the stroke outline, which is a polygon
+        rather than a polyline."""
+        coordinates = " ".join(f"{fmt(x)},{fmt(y)}" for x, y in points)
+        self.parts.append(
+            f'<polygon points="{coordinates}" fill="{fill}" '
+            f'stroke="{stroke}" stroke-width="{fmt(stroke_width)}" '
+            f'fill-rule="nonzero" opacity="{fmt(opacity)}"/>'
+        )
+
     def line(self, x1, y1, x2, y2, stroke=GUIDE, stroke_width=0.6, opacity=1.0,
              dash=None):
         extra = f' stroke-dasharray="{dash}"' if dash else ""

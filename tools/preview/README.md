@@ -110,6 +110,12 @@ triangle A-B-centre.
   smoke test before an SDK build, and a check that a geometry edit has not
   quietly multiplied the work: it reports square-root and division counts,
   which are the numbers that mean anything on the watch.
+- `sheet_envelope.py` -- draws the *stroke*, not the centerline: it compiles
+  `build_stroke_polygon` out of `main.c` and renders the resulting
+  `s_polygon_points` together with the outline and minute-core passes, so the
+  sheet shows what the watch fills rather than a re-port of it.  Marks the two
+  offset-curve failure modes (inner-offset cusp, self-collision), both of which
+  are live near overlap.  Needs a C compiler.
 - `render_anim.sh` -- the only part needing an external binary: Chromium
   (`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, overridable with
   `CHROME=`) to rasterize the frames. Override the output scale with `SCALE=2`.
