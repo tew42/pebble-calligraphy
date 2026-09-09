@@ -13,7 +13,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import geometry as G
 import curvature as CV
 from sheet_constructions import CUBIC_RULES, D1, turns, reverse_turn
+import sheet_curvature
 from sheet_curvature import profile
+
+#: 400 samples is for drawing; detecting a sign change needs far fewer,
+#: and the full sweep is 720 positions x 6 stem configs x 7 families.
+sheet_curvature.SAMPLES = 120
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 FAMILIES = ("c0", "c1", "d1", "f1", "f2*", "f3*", "f4*")
@@ -44,7 +49,7 @@ def measure(kind, stems, quick):
     face = G.Face()
     worst_rev = 0.0
     worst_junction = 0.0
-    crossings = 0
+    swerving = 0
     overlap_depth = 0.0
     quad_depth, quad_gap = 0.0, 1e9
     ticks = combos(True) if kind == "f1" else combos(quick)
@@ -55,8 +60,9 @@ def measure(kind, stems, quick):
         peak = max(abs(k) for k in ks) or 1.0
         worst_junction = max(worst_junction,
                              max(abs(ks[0]), abs(ks[-1])) / peak)
-        crossings += sum(1 for i in range(1, len(ks))
-                         if ks[i - 1] * ks[i] < 0.0 and abs(ks[i]) > 1e-4 * peak)
+        if any(ks[i - 1] * ks[i] < 0.0 and abs(ks[i]) > 1e-4 * peak
+               for i in range(1, len(ks))):
+            swerving += 1
         delta = G.separation_degrees(hour, minute)
         depth = getattr(cl, "exact_depth", None) or G.norm(
             G.sub(cl.pivot, cl.context.center))
@@ -64,7 +70,8 @@ def measure(kind, stems, quick):
             overlap_depth = max(overlap_depth, depth)
         if abs(delta - 90.0) < quad_gap:
             quad_gap, quad_depth = abs(delta - 90.0), depth
-    return dict(rev=worst_rev, junction=worst_junction, cross=crossings,
+    return dict(rev=worst_rev, junction=worst_junction,
+                swerve=100.0 * swerving / max(1, len(ticks)),
                 overlap=overlap_depth, quad=quad_depth, n=len(ticks))
 
 
@@ -75,8 +82,9 @@ def main(quick):
              "`rev` = worst reverse turn in the drawn line, degrees (0 = never "
              "swerves).  `k(end)` = curvature at the stem junctions as a "
              "fraction of that connector's peak (0 = meets the straight stem "
-             "with no curvature step).  `cross` = total sign changes of k over "
-             "all hand positions.  `overlap` = depth at exact overlap, which "
+             "with no curvature step).  `swerve` = share of hand positions "
+             "at which k changes sign anywhere.  `overlap` = depth at exact "
+             "overlap, which "
              f"the spec caps at {OVERLAP_MAX_PX:.0f} px.  `d=90` = depth at "
              "quadrature, which the spec wants clearly non-zero.",
              ""]
@@ -84,14 +92,14 @@ def main(quick):
                  "swapped"):
         stems = G.STEMS_BY_NAME[name]
         lines += [f"## stems: {name} -- {stems.describe()}", "",
-                  "| family | rev | k(end) | cross | overlap | d=90 |",
+                  "| family | rev | k(end) | swerve | overlap | d=90 |",
                   "|---|---|---|---|---|---|"]
         for kind in FAMILIES:
             m = measure(kind, stems, quick)
             ok = "" if m["overlap"] <= OVERLAP_MAX_PX else " !"
             lines.append(
                 f"| {LABELS[kind]} | {m['rev']:.2f} | {m['junction']:.3f} | "
-                f"{m['cross']} | {m['overlap']:.2f}{ok} | {m['quad']:.2f} |")
+                f"{m['swerve']:.0f}% | {m['overlap']:.2f}{ok} | {m['quad']:.2f} |")
         lines.append("")
         print("\n".join(lines[-(len(FAMILIES) + 4):]))
     path = os.path.join(OUT, "families.md")

@@ -602,8 +602,16 @@ departure at quadrature cannot survive rasterization at all. The jump is real in
 |---|---|---|---|---|---|
 | C0 / C1 / D1 | 2 x 4x4 Gauss-Jordan | none | none | 1 sqrt + 30 Hermite evals | yes: solve validity, Tikhonov retry |
 | F1 | none | **nested**: 30 x 44 | ~1600 pts per probe | ~2e6 log/exp/sin/cos | yes: falls back to the fold |
-| F2 / F3 | none | none | 1-D, `g` and `sigma`; tabulate in `Omega` | ~130 sin/cos, or a 32-entry table | no |
+| F2 / F3 | none | none | one 1-D pass over the hump | ~90 `sin_lookup` / `cos_lookup` | no |
 | F4 | none | none | **none** | 30 `sin_lookup` + 30 `cos_lookup` | no |
+
+F2 and F3 need no lookup table, and the ordering works out better than it
+looks. The chord `g` of the unit hump is just the endpoint of the same
+integration pass that produces the drawn samples, so one pass over ~30 steps
+gives `g`, hence `H = 2 d sin(delta/2) / g`, hence the scale factor for the
+points already computed. `Phi(tau)` is analytic in both cases -- piecewise
+quadratic for F2, `tau - sin(2 pi tau)/(2 pi)` for F3 -- so each sample costs a
+couple of table lookups. No iteration anywhere.
 
 F1 also has a *maximum* reachable depth: `nu = 2` is the gentlest Beta whose
 curvature still vanishes at both ends (`m, n >= 1`), and past `delta` of about
@@ -656,3 +664,51 @@ families stay at 0.00.
 
 None of this is a recommendation yet -- the visual judgement between F2, F3 and
 F4 (and whether F4's `k` jump matters at this resolution) is the author's.
+
+## 23. Families not built, and why
+
+The four above are not the whole space. These were considered and set aside,
+with the reason in each case.
+
+**Clothoid pair (Euler spiral in, Euler spiral out).** `k` rises linearly from
+zero to a peak at the join and falls linearly back -- so it is F2 with the
+plateau removed, a triangle rather than a trapezoid. Everything said about F2
+applies, `k` is continuous and `k'` has two corners instead of four, and it is
+marginally cheaper. It is not a separate family so much as F2 at a plateau
+fraction of zero; the plateau fraction is fixed structurally at one third, and
+nothing measured suggests the triangle would behave differently. Worth a row on
+a sheet if the trapezoid's flat maximum reads badly.
+
+**Biarc.** Two same-sign circular arcs meeting tangentially at an interior
+point: the classical way to hit two positions and two tangents in closed
+form. It is what F4 becomes if the two tangent lengths are allowed to differ,
+and it is the only cheap construction that can be genuinely asymmetric (see
+below). But `k` then jumps *three* times
+-- at both stem junctions and at the arc-arc join -- so it is strictly worse
+than F4 on the stated requirement while costing more. Rejected on that.
+
+**Spiral (curvature-monotone) Hermite interpolation.** The literature
+construction for joining two position/tangent pairs with monotone curvature.
+It solves the wrong problem here: monotone `k` along the whole connector is
+incompatible with `k = 0` at *both* junctions, which is the requirement that
+removes the curvature step. It would suit a connector allowed to keep curvature
+at one end.
+
+**Genuinely asymmetric curvature, informed by the hand lengths.** This was asked
+for explicitly and deserves a straight answer: F2, F3 and F4 are only *mildly*
+asymmetric. The hump itself is symmetric -- that is what forces equal tangent
+lengths and makes the depth a division rather than a root find -- so the stem
+asymmetry shows up only in the two straight runs, `r_h - d` against `r_m - d`.
+For `strong-asym` at `delta = 90` that is 8.8 px against 48.8 px, which is a
+large asymmetry in the *drawn line* but none at all in `k`.
+
+Making `k` itself asymmetric means unequal tangent lengths -- say `d_h = rho
+r_h`, `d_m = rho r_m`, one dial `rho` -- and then the hump has to skew to join
+them. Skewing costs the symmetry argument, so the chord direction no longer
+comes for free and a second solve returns: exactly F1's two-dimensional
+structure, at F1's price. The honest summary is that **asymmetric `k` and
+closed form are in direct conflict here**, and the conflict is structural, not
+an artifact of these four shapes. Given that all four already reach 0.00 deg
+reverse turn in `strong-asym` -- the case asymmetry was meant to fix -- there is
+no measured problem left for asymmetric `k` to solve. If it is wanted for its
+own sake, the biarc is the cheap version and it costs a third `k` jump.
