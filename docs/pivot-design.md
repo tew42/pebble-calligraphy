@@ -1218,10 +1218,68 @@ It is still 96 square roots once a minute. Not a reason on its own to touch
 working code; worth doing if that function is being edited anyway.
 
 The same applies, smaller, to `calculate_pivot_point`: it recomputes the two
-radial directions and the two inner radii that `build_centerline` already has
-or computes later for `branch_clearance`, which is four of the 205. Reusing
-them would agree to 2.7e-7 in the unit vectors -- about 1e-5 px on the pivot --
-so it is free to do, and it is deliberately not done: the existing file already
-computes `radial_dot` in both places, and a pivot rule that derives everything
-it needs from its own arguments is easier to check against the model than one
-handed six loose floats.
+radial directions, `radial_dot` and the two inner radii that `build_centerline`
+already has or computes later for `branch_clearance`, which is six of the 205.
+Reusing them would agree to 2.7e-7 in the unit vectors -- about 1e-5 px on the
+pivot -- so it is free to do, and it is deliberately not done. See section 36:
+the original pivot function recomputed exactly the same radials and
+`radial_dot`, so this is the file's convention rather than a slip in one
+place.
+
+## 36. Why the redundancy is there
+
+Worth answering, because it decides whether removing it is a fix or a
+disagreement about style. Four pieces of evidence, and they point the same way.
+
+**There is no history to read.** `git log` on `src/c/main.c` is one commit,
+"Initial commit", and then the D1 change. The file arrived whole, so intent has
+to be inferred from its structure rather than from how it got that way. The
+header also records that it was written with AI assistance, which plausibly
+favours locally self-contained functions over state threaded between them.
+
+**The file's own section headers assign ownership.** `s_cumulative_length` is
+declared under `/* Arc-length cache */`; `calculate_centerline_tangent` lives
+under `/* Stroke polygon */`. The tangent function does not reach into another
+section's state, and the redundancy is exactly what that boundary costs.
+
+**The original pivot function did the same thing, deliberately.** Before D1,
+`calculate_pivot_point` took the hand tips and recomputed both radial
+directions with `direction_between(center, ...)` and then `radial_dot` -- all
+three of which `build_centerline` already had in hand at the call site, and
+`radial_dot` again later for `branch_clearance`. So self-containment is the
+convention across the file, not an oversight in `calculate_centerline_tangent`.
+D1 follows it, which is why the new pivot derives its own radials and inner
+radii too.
+
+**`calculate_centerline_tangent` is written defensively about its inputs, and
+one of those guards is load-bearing.** It has four epsilon branches. Measured
+over all 720 hand positions:
+
+| branch | hits per full cycle |
+|---|---:|
+| both adjacent segments degenerate | 0 |
+| incoming segment degenerate | 0 |
+| outgoing segment degenerate | 0 |
+| the two unit directions cancel | **1** |
+
+The shortest segment anywhere in the cycle is **0.0315 px** against a
+`VECTOR_EPSILON` of 1e-4, a margin of 315x, so the three length guards are
+dead code. The fourth fires exactly once, at **12:00, centerline index 22** --
+which is the pivot index at exact overlap, where the fold reverses direction by
+180 degrees and the incoming and outgoing tangents are precisely antiparallel.
+That is the degenerate hairpin the whole design is built around, and it is
+handled in the one place a caller would never think to check.
+
+So the reading is: these are functions written to be correct on their own terms,
+independent of who calls them and in what order, composed out of the
+one-line `distance_between` / `direction_between` primitives. The recomputation
+is the price of that, and at 205 square roots a minute it is a price the design
+can afford without anyone having to notice.
+
+**Which is also the argument against the optimisation.** As written,
+`calculate_centerline_tangent` depends only on `s_centerline` and an index, so
+it is correct whenever the centerline is filled. Caching per-segment directions
+would give it a hidden ordering requirement -- valid only after
+`update_cumulative_lengths()` -- in exchange for 96 square roots a minute. That
+is a worse trade than the raw numbers suggest, and it is the reason to leave it
+alone rather than the arithmetic.
