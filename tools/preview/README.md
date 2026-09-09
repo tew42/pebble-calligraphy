@@ -92,6 +92,11 @@ triangle A-B-centre.
 - `sheet_stemspace.py` -- D1's defect over the whole (r_h, r_m) space, which
   is D1's entire design space: its connector reads the stems only through the
   two inner radii.
+- `sheet_d1worst.py` -- D1's worst reverse turn drawn, by stem ratio and by
+  stem size, zoomed on the hardest reversing vertex.  The turn in degrees is
+  scale-invariant but the deviation it draws is a length, so each ratio is
+  shown both at a moderate stem size and at the largest that fits inside the
+  hands -- the case a ratio budget has to survive.
 - `shot.sh` -- rasterize named sheets to PNG so they can be looked at.
 - `render_anim.sh` -- the only part needing an external binary: Chromium
   (`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, overridable with

@@ -1002,3 +1002,80 @@ At the current ratio the worst visible deviation is **1.14 px**, and at
 junction at `delta = 24`. That is small, and it is not nothing: it is the only
 defect in this whole exercise that a person can see, and it is the one thing
 prescribed curvature removes outright.
+
+# Round 6: depth headroom, and a stem-ratio budget
+
+## 31. Allowing more depth does not help -- depth and smoothness are one axis
+
+Both F6 and A1 are driven to D1's depth. The obvious question is whether
+relaxing that upward away from the two degenerate ends would buy anything. It
+does not, and the reason is structural rather than incidental: a deeper corner
+needs a *flatter* `k`, because a flat-topped curvature profile turns the same
+total angle at a lower peak and so cuts less deeply toward the centre. Depth and
+curvature-flatness are the same axis, read in opposite directions. Scaling
+D1's depth rule by a multiplier and asking F6 for the smoothest taper that still
+reaches it:
+
+| depth x | pure raised cosine (no plateau) out to | reachable at all out to |
+|---:|---:|---:|
+| 0.70 | delta 123 | everywhere |
+| 0.85 | delta 97 | everywhere |
+| **1.00** | **delta 82** | **everywhere** |
+| 1.15 | delta 72 | delta 120 |
+| 1.30 | delta 64 | delta 100 |
+
+More depth costs the plateau-free shape immediately, and past about 1.15x it
+becomes unreachable outright -- *no* single-signed unimodal curvature profile
+gets there. That last bound is exact and worth stating on its own: D1's rule is
+`arc_apex_ceiling * sin(delta/2)`, and `arc_apex_ceiling` is the deepest a
+constant-curvature corner can sit, so the available multiplier is at most
+`1 / sin(delta/2)` -- which is **1.0 at opposition**. D1's depth rule is already
+against the geometric ceiling there; the headroom only exists in the mid-range,
+and spending it costs the shape.
+
+Going the other way is a real option: at 0.85x the depth, F6 keeps a pure
+raised cosine out to `delta = 97` instead of 82. That is a legitimate trade -- a
+slightly shallower, more uniformly-curved connector -- but it is shallower than
+D1 everywhere, which is the opposite of the "swoopier" preference.
+
+## 32. A stem-ratio budget from the reverse turn
+
+Sheet: `d1-worst.svg`, rebuilt to centre its zooms on the hardest reversing
+vertex rather than on the widest gap -- the gap peaks around `delta` 50 while the
+reverse bend sits near the stem junction, so the earlier framing was showing the
+wrong place.
+
+The reverse turn in degrees is exactly scale-invariant. The deviation it
+produces in pixels is not, because it is a length, so a budget has to be checked
+at the largest stems that fit -- with the current hands (`0.60R` and `0.90R`)
+and a stem starting no further than 95% up its own hand, that is
+`r_h <= 0.57`, `r_m <= 0.855`:
+
+| `r_m/r_h` | worst turn | deviation, moderate stems | deviation, largest stems | at |
+|---:|---:|---:|---:|---:|
+| 1.00 | 1.68 deg | 0.10 px | 0.12 px | delta 21 |
+| 1.20 (**current**) | 1.91 | 0.24 | 0.30 | 24 |
+| 1.40 | 2.32 | 0.42 | 0.53 | 45 |
+| 1.55 | **3.00** | 0.67 | **0.93** | 49 |
+| 1.77 | **3.99** | 0.85 | **1.12** | 58 |
+| 2.00 | 4.91 | 1.34 | 1.66 | 61 |
+| 2.50 | 6.50 | 1.82 | 2.01 | 68 |
+
+So, as a budget on the ratio (symmetric under swapping, since the defect depends
+only on `|log(r_m/r_h)|`):
+
+- **3 degrees**: `r_m/r_h` within **[0.65, 1.55]**, worst deviation 0.93 px
+- **4 degrees**: within **[0.56, 1.77]**, worst deviation 1.12 px
+
+The current 0.45 / 0.54 is at ratio 1.20 -- 1.91 degrees and 0.30 px at the
+largest stems, comfortably inside either budget with room to grow the asymmetry
+by about 30% before hitting the 3 degree line. Note also that the position of
+the worst turn migrates outward with the ratio, from `delta = 21` at symmetry to
+`delta = 68` at ratio 2.5, so a ratio change moves *when* in the hour the defect
+shows as well as how much.
+
+Two caveats on reading the budget. It is a budget for *keeping D1*: prescribed
+curvature removes the reverse turn entirely at every ratio, so the constraint
+only exists if the cubic architecture stays. And the pixel column assumes the
+current hand lengths; longer hands admit larger stems, and the same ratio then
+costs more pixels.

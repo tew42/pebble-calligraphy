@@ -576,6 +576,90 @@ def test_proportional_tangent_lengths_are_out_of_reach() -> None:
           "the reachable ratio widens toward opposition")
 
 
+def test_more_depth_costs_smoothness() -> None:
+    """Depth and curvature-flatness are the same axis, read backwards."""
+    print("more depth than D1's rule costs the plateau-free shape")
+
+    def bracket_arc(delta):
+        return math.cos(delta / 2) / (1.0 + math.sin(delta / 2))
+
+    def cosine_reaches(delta, multiplier):
+        need = bracket_arc(delta) * math.sin(delta / 2) * multiplier
+        return CV._bracket_for(0.5, delta) >= need
+
+    def any_shape_reaches(delta, multiplier):
+        need = bracket_arc(delta) * math.sin(delta / 2) * multiplier
+        return CV._bracket_for(0.0, delta) >= need
+
+    onsets = {}
+    for multiplier in (0.85, 1.0, 1.15):
+        onsets[multiplier] = min(
+            (d for d in range(1, 180)
+             if not cosine_reaches(math.radians(d), multiplier)), default=180)
+    check(onsets[0.85] > onsets[1.0] > onsets[1.15],
+          f"pure cosine out to delta {onsets[0.85]-1} / {onsets[1.0]-1} / "
+          f"{onsets[1.15]-1} at 0.85x / 1.0x / 1.15x the depth")
+    # At opposition the rule is already on the geometric ceiling, so there is
+    # no headroom there at all.
+    check(any_shape_reaches(math.radians(179), 1.0)
+          and not any_shape_reaches(math.radians(179), 1.05),
+          "no shape beats D1's depth at opposition: the rule is at the ceiling")
+
+
+def test_reverse_turn_budget_is_scale_invariant_but_pixels_are_not() -> None:
+    """A ratio budget has to be checked at the largest stems that fit."""
+    print("the turn is scale-invariant; the deviation it draws is not")
+    face = G.Face()
+    turns, pixels = {}, {}
+    for label, r_h, r_m in (("moderate", 0.400, 0.600),
+                            ("largest", 0.570, 0.855)):
+        stems = G.Stems(name=label, hour_inner=r_h, minute_inner=r_m,
+                        hour_length=max(0.60, r_h / 0.95),
+                        minute_length=max(0.90, r_m / 0.95))
+        best = (0.0, None)
+        for hour, minute in G.ALL_TIMES:
+            cl = G.build_centerline(hour, minute,
+                                    G.CANDIDATES_BY_KEY["d1-arc-sin"].rule,
+                                    face, stems)
+            turn = _turn_series(cl.points)
+            total = sum(turn)
+            rev = sum(abs(v) for v in turn
+                      if abs(v) > 0.02 and (v > 0) != (total > 0))
+            if rev > best[0]:
+                best = (rev, (hour, minute))
+        turns[label] = best[0]
+        cl = G.build_centerline(*best[1],
+                                G.CANDIDATES_BY_KEY["d1-arc-sin"].rule,
+                                face, stems)
+        ref = CV.build_compact_centerline(
+            *best[1], CV.adaptive_shape,
+            G.CANDIDATES_BY_KEY["d1-arc-sin"].rule, face, stems)
+        turn = _turn_series(cl.points)
+        total = sum(turn)
+        run = [i + 1 for i, v in enumerate(turn)
+               if abs(v) > 0.02 and (v > 0) != (total > 0)]
+        def to_polyline(p, poly):
+            best = float("inf")
+            for k in range(len(poly) - 1):
+                a, b = poly[k], poly[k + 1]
+                d = G.sub(b, a)
+                length = G.dot(d, d)
+                if length < 1e-18:
+                    best = min(best, G.norm(G.sub(p, a)))
+                    continue
+                u = max(0.0, min(1.0, G.dot(G.sub(p, a), d) / length))
+                best = min(best, G.norm(G.sub(p, G.add(a, G.scale(d, u)))))
+            return best
+
+        pixels[label] = max(to_polyline(cl.points[i], ref.points) for i in run)
+    # Mathematically the two configurations are the same shape scaled by 1.425,
+    # so the angle is identical; only the floating-point arithmetic differs.
+    check(abs(turns["moderate"] - turns["largest"]) < 1e-3,
+          f"same ratio, same turn: {turns['largest']:.4f} deg either way")
+    check(pixels["largest"] > pixels["moderate"] * 1.2,
+          f"but {pixels['moderate']:.2f} px against {pixels['largest']:.2f} px")
+
+
 def test_animation_covers_the_hour() -> None:
     """The animated hour has to pass through both accepted degeneracies, or it
     is not exercising the interesting part of the design."""
@@ -719,6 +803,8 @@ def main() -> int:
         test_asymmetric_converts_stem_surplus_into_reach,
         test_asymmetric_keeps_the_curvature_requirements,
         test_proportional_tangent_lengths_are_out_of_reach,
+        test_more_depth_costs_smoothness,
+        test_reverse_turn_budget_is_scale_invariant_but_pixels_are_not,
         test_animation_covers_the_hour,
         test_animation_frames_are_wellformed,
         test_gif_writer_roundtrip,
