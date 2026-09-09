@@ -47,6 +47,9 @@ def profile(kind, hour, minute, face, stems):
     elif kind == "f6":
         cl = CV.build_compact_centerline(hour, minute, CV.adaptive_shape,
                                          D1.rule, face, stems, SAMPLES)
+    elif kind == "a1":
+        cl = CV.build_asymmetric_centerline(hour, minute, D1.rule, face, stems,
+                                            SAMPLES)
     else:
         power = None
         if "@" in kind:

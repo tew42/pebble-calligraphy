@@ -867,3 +867,138 @@ The current 0.45 / 0.54 sits at ratio 1.20, giving a 2.6% lobe -- comfortably
 inside the 5% band with roughly 10% of headroom before it leaves. The W
 flattening, by contrast, is absent everywhere in the space: D1 fixed that
 outright, and the reversed lobe is its only remaining defect.
+
+# Round 5: the asymmetric option, and D1's worst case drawn
+
+## 29. A1: uneven tangent lengths, and what asymmetry is actually worth
+
+A symmetric hump is mirror-symmetric about its own midpoint, so it must meet
+both radials at the *same* distance from the centre. The shorter stem therefore
+caps the reach and the longer stem's surplus is wasted. Skewing the hump lifts
+that cap. From the triangle at the centre, the chord `S -> E` is
+`d_h u_in + d_m u_out`, so
+
+    tan(psi) = d_m sin(Omega) / (d_h + d_m cos(Omega))
+    d_m / d_h = sin(psi) / sin(Omega - psi)
+
+and `psi = Omega/2` gives `d_h = d_m` -- which is exactly why a symmetric hump
+is stuck. So the *shape's* chord angle fixes the tangent-length ratio, and a
+wanted ratio fixes the shape.
+
+**The tidy version does not work.** Proportional tangent lengths
+(`d_h = rho r_h`, `d_m = rho r_m`) would be the elegant rule: both straight runs
+vanish together at `rho = 1`, the required `psi` is closed form, and the whole
+configuration scales linearly about the centre so the depth is one division.
+But it is out of reach. A skewed raised cosine's area is proportional to its two
+ramp widths -- integrating, `Phi(a) = a` for a peak at `a` -- so it cannot
+front-load the turn, and its chord angle spans only a narrow band around
+`Omega/2`. The tangent-length ratio it can deliver:
+
+| delta | reachable `d_m/d_h` |
+|---:|---|
+| 10 | 0.86 .. 1.17 |
+| 60 | 0.55 .. 1.81 |
+| 90 | 0.49 .. 2.06 |
+| 170 | 0.42 .. 2.36 |
+
+The current stems already want 1.20, which is outside the reach below about
+`delta = 12`; `strong-asym` wants 2.33, outside it below about 150. Driving the
+proportional rule anyway fails the inversion at 605 of 720 positions under
+`strong-asym`, and falls back to the fold.
+
+**What works is to skew only as far as the depth demands:**
+
+    d_h = min(r_h, d),   d_m = min(r_m, d)
+
+Below the symmetric ceiling nothing is skewed and this *is* F3; above it the
+shorter tangent sticks at `r_h` while the longer one grows, and the skew comes
+in continuously from zero. Measured over `delta` 0..180 in each stem
+configuration:
+
+| stems | exact depth out to | worst shortfall | F3's shortfall | gain |
+|---|---:|---:|---:|---:|
+| symmetric | delta 83 | 3.34 px | 3.34 px | **0.00** |
+| short | delta 91 | 1.27 | 1.67 | 0.40 |
+| current | delta 91 | 2.28 | 3.01 | 0.73 |
+| swapped | delta 91 | 2.28 | 3.01 | 0.73 |
+| long | delta 99 | 2.20 | 3.74 | 1.54 |
+| strong-asym | **delta 179** | **0.00** | 2.00 | 2.00 |
+
+That is the honest answer to what asymmetric curvature buys: **it converts the
+longer stem's surplus into depth reach, and it is worth exactly nothing when the
+stems are equal.** Under `strong-asym` it reaches the full fillet depth at every
+separation, which no symmetric smooth shape does. Under the current stems it
+extends the exact range from `delta` 83 to 91 and shaves the worst shortfall
+from 3.0 to 2.3 px.
+
+Curvature requirements all survive: single-signed everywhere, exactly zero at
+both stem junctions, exact fold through the centre at overlap. Reverse turn is
+0.08 degrees, which is sampling of the skewed hump rather than shape -- 25 times
+smaller than D1's. Below the symmetric ceiling A1 reproduces F3 to 2e-14 px, as
+it should: the skew is exactly zero there.
+
+Finding A1's handover exposed a latent bug in the shared hump cache, worth
+recording because it was silent. `_hump_unit` keys on the shape's `key` string,
+and both `tukey_shape` and `skewed_cosine` formatted their parameter into that
+key with `%.3f` / `%.4f`. Every solve that bisects on a shape parameter was
+therefore bisecting against a *step function* quantised at 1e-3 or 1e-4, and
+converged to the middle of a quantisation cell rather than to the root. It
+never showed up in F6's results -- the outer depth solve absorbed it into `d` --
+but F6's taper was only ever resolved to about 5e-4. Both keys now carry full
+precision, and F6's depth error is 3e-14 px.
+
+**Where it loses to F6.** F6 reaches the depth target at *every* separation in
+*every* stem configuration, with no shortfall anywhere; A1 only closes the gap
+when the stems happen to be lopsided. F6's taper schedule is a universal
+function of `delta` with the stems cancelling out; A1's skew schedule depends on
+`r_h` and `r_m`, so it is a per-design constant. And A1 needs a nested 1-D
+solve in the band above the symmetric ceiling, against F6's single division.
+A1's one advantage is that it keeps a plateau-free cosine at every separation,
+where F6 grows a plateau past `delta = 83` -- but that plateau only becomes a
+third of the hump past `delta = 96`, where the arc is never tighter than 35 px
+radius, so the advantage is not visible.
+
+## 30. D1's worst case, drawn -- and a correction to section 28
+
+Sheet: `d1-worst.svg`. For each stem ratio it finds the hand position maximising
+each defect, draws the connector with the reversed-curvature run picked out, and
+zooms 7x with F6 overlaid at the same depth.
+
+**The correction.** Section 28 ranked stem ratios by the reversed `k` lobe as a
+share of peak `|k|`. That is scale-free, which makes it comparable across
+ratios, but it is *not weighted by visibility* -- and its maximum sits out near
+opposition, where peak curvature has fallen to a 400 px radius. At ratio 2.50
+the worst lobe is 27.9% of peak and sits at `delta = 149`, where it amounts to
+**0.12 px** of actual deviation. Quoting it as the headline number overstated
+the defect at wide separations and understated where it really lives.
+
+The metric that matters is the distance in pixels between D1 and a
+monotone-curvature construction at the same depth. All three, over all 720
+positions:
+
+| `r_m/r_h` | worst gap vs F6 | at | worst reverse turn | at | worst lobe | at |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1.00 | 0.90 px | delta 52 | 1.68 deg | delta 21 | 0.6% | delta 47 |
+| 1.20 (**current**) | 1.14 | 51 | 1.91 | 24 | 2.6% | 71 |
+| 1.50 | 1.33 | 50 | 2.77 | 47 | 8.7% | 99 |
+| 2.00 | 2.64 | 52 | 4.91 | 61 | 19.6% | 133 |
+| 2.50 | 4.16 | 58 | 6.50 | 68 | 27.9% | 149 |
+
+The three peak at different separations, and the visible one is consistently
+around `delta` 50 to 60 -- the half-open hand position, not opposition. Two
+further notes:
+
+- The reverse turn and the lobe are **exactly scale-invariant**: 1.91 deg and
+  2.6% at `r_h` of 0.20, 0.30, 0.45 and 0.60, all at ratio 1.20. The pixel gap
+  is not, because it is a length: 0.51, 0.76, 1.14, 1.52 px for those same
+  radii. **Longer stems make the same defect more visible.**
+- Section 28's sweep set the hand tips just past the stem starts, which makes
+  the drawn hands almost nonexistent. It does not change the connector -- D1's
+  rule reads only `r_h`, `r_m` and `cos(delta)` -- but the numbers above use
+  realistic hand lengths, and the ratio bands from section 28 stand unchanged.
+
+At the current ratio the worst visible deviation is **1.14 px**, and at
+`r_h = 0.45R` the reverse bend is a 1.91 degree turn concentrated near the stem
+junction at `delta = 24`. That is small, and it is not nothing: it is the only
+defect in this whole exercise that a person can see, and it is the one thing
+prescribed curvature removes outright.

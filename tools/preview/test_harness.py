@@ -490,6 +490,92 @@ def test_adaptive_taper_meets_every_requirement() -> None:
     check(clamps == 0, "never runs out of stem")
 
 
+def test_asymmetric_is_f3_below_the_symmetric_ceiling() -> None:
+    """A1 must not skew until the shorter stem has actually run out."""
+    print("A1 reduces to F3 while the symmetric tangent length suffices")
+    face = G.Face()
+    rule = G.CANDIDATES_BY_KEY["d1-arc-sin"].rule
+    for stems in G.STEM_CONFIGS:
+        worst = 0.0
+        checked = 0
+        for minute in range(60):
+            f3 = CV.build_compact_centerline(12, minute, CV.F3, rule, face,
+                                             stems)
+            if f3.clamped:
+                continue
+            a1 = CV.build_asymmetric_centerline(12, minute, rule, face, stems)
+            checked += 1
+            worst = max(worst, abs(a1.exact_depth - f3.exact_depth),
+                        abs(a1.peak - 0.5))
+        check(checked > 0 and worst < 1e-6,
+              f"{stems.name}: identical to F3 at {checked} positions")
+
+
+def test_asymmetric_converts_stem_surplus_into_reach() -> None:
+    """The skew is worth exactly as much as the longer stem's surplus."""
+    print("A1's gain over F3 tracks the stem asymmetry")
+    face = G.Face()
+    rule = G.CANDIDATES_BY_KEY["d1-arc-sin"].rule
+    gains = {}
+    for stems in G.STEM_CONFIGS:
+        gain = 0.0
+        for minute in range(60):
+            a1 = CV.build_asymmetric_centerline(12, minute, rule, face, stems)
+            f3 = CV.build_compact_centerline(12, minute, CV.F3, rule, face,
+                                             stems)
+            gain = max(gain, a1.exact_depth - f3.exact_depth)
+        gains[stems.name] = gain
+    check(gains["symmetric"] < 1e-6,
+          "symmetric stems: no surplus, so no gain at all")
+    check(gains["strong-asym"] > gains["current"] > 1e-3,
+          f"strong-asym gains {gains['strong-asym']:.2f} px against "
+          f"current's {gains['current']:.2f} px")
+
+
+def test_asymmetric_keeps_the_curvature_requirements() -> None:
+    print("A1 keeps single-signed curvature and zero at the junctions")
+    face = G.Face()
+    rule = G.CANDIDATES_BY_KEY["d1-arc-sin"].rule
+    worst_rev = worst_junction = worst_overlap = 0.0
+    negative = 0
+    for stems in G.STEM_CONFIGS:
+        for minute in range(60):
+            cl = CV.build_asymmetric_centerline(12, minute, rule, face, stems)
+            negative += sum(1 for k in cl.curvatures if k < 0.0)
+            worst_junction = max(worst_junction, abs(cl.curvatures[0]),
+                                 abs(cl.curvatures[-1]))
+            turn = _turn_series(cl.points)
+            total = sum(turn)
+            worst_rev = max(worst_rev, sum(
+                abs(v) for v in turn
+                if abs(v) > 0.02 and (v > 0) != (total > 0)))
+            if G.separation_degrees(12, minute) < 1e-9:
+                worst_overlap = max(worst_overlap, cl.exact_depth)
+    check(negative == 0, "curvature never changes sign")
+    check(worst_junction == 0.0, "junction curvature exactly zero")
+    check(worst_overlap == 0.0, "folds through the centre at overlap")
+    # The skewed hump is sampled, not placed analytically, so a fraction of a
+    # degree of reverse turn survives discretisation.  D1's is 25x larger.
+    check(worst_rev < 0.2, f"reverse turn {worst_rev:.3f} deg (sampling only)")
+
+
+def test_proportional_tangent_lengths_are_out_of_reach() -> None:
+    """Why A1 caps rather than using d_h/r_h = d_m/r_m."""
+    print("the tidier proportional rule is not reachable")
+    reach = {}
+    for degrees in (10, 90, 170):
+        turn = math.pi - math.radians(degrees)
+        lo = CV._hump_chord_angle(CV.skewed_cosine(1e-4), turn)
+        hi = CV._hump_chord_angle(CV.skewed_cosine(1.0 - 1e-4), turn)
+        best = max(lo, hi)
+        reach[degrees] = math.sin(best) / math.sin(turn - best)
+    check(reach[10] < 1.20,
+          f"near overlap a skewed cosine reaches only {reach[10]:.2f}, "
+          "and the current stems want 1.20")
+    check(reach[170] > reach[90] > reach[10],
+          "the reachable ratio widens toward opposition")
+
+
 def test_animation_covers_the_hour() -> None:
     """The animated hour has to pass through both accepted degeneracies, or it
     is not exercising the interesting part of the design."""
@@ -629,6 +715,10 @@ def main() -> int:
         test_adaptive_taper_is_stem_independent,
         test_adaptive_taper_keeps_the_cosine_where_it_shows,
         test_adaptive_taper_meets_every_requirement,
+        test_asymmetric_is_f3_below_the_symmetric_ceiling,
+        test_asymmetric_converts_stem_surplus_into_reach,
+        test_asymmetric_keeps_the_curvature_requirements,
+        test_proportional_tangent_lengths_are_out_of_reach,
         test_animation_covers_the_hour,
         test_animation_frames_are_wellformed,
         test_gif_writer_roundtrip,

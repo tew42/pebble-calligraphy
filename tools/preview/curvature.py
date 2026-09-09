@@ -438,7 +438,10 @@ def tukey_shape(rho: float, key=None, label=None) -> HumpShape:
             return 0.5 * (1.0 - math.cos(math.pi * (1.0 - t) / rho))
         return 1.0
 
-    return HumpShape(key or f"f5r{rho:.3f}",
+    # The key must carry the taper at full precision: it is the cache key in
+    # _hump_unit, and rounding it turns every solve that bisects on rho into a
+    # bisection against a step function.
+    return HumpShape(key or f"f5r{rho:.17g}",
                      label or f"F5 cosine-tapered plateau, taper {rho:.2f}",
                      phi, breaks=(rho, 1.0 - rho))
 
@@ -700,7 +703,9 @@ def build_compact_centerline(
         d = 0.0
     else:
         d = target / bracket
-    clamped = d > d_max
+    # F6's whole point is to drive d *to* the ceiling, so an exact hit must not
+    # register as running short; only a genuine overshoot counts.
+    clamped = d > d_max * (1.0 + 1e-9)
     d = min(d, d_max)
 
     # Hump arc length from the chord it has to span.
@@ -842,3 +847,271 @@ def _resample_by_turn(points, kappas, count):
         out_p.append(G.add(points[j], G.scale(G.sub(points[j + 1], points[j]), f)))
         out_k.append(kappas[j] + (kappas[j + 1] - kappas[j]) * f)
     return out_p, out_k
+
+
+# ---------------------------------------------------------------------------
+# Asymmetric compact family (A1)
+# ---------------------------------------------------------------------------
+#
+# F2 to F6 all use a *symmetric* hump, and a symmetric hump is mirror-symmetric
+# about its own midpoint, so it must leave and rejoin the two radial lines at
+# the same distance d from the centre.  That forces d <= min(r_h, r_m): the
+# shorter stem sets the ceiling and the longer stem's extra reach is wasted.
+# The stem asymmetry then shows up only in the two straight runs.
+#
+# Letting the hump skew removes that.  With tangent lengths d_h, d_m the chord
+# S -> E subtends the isoceles-no-longer triangle at the centre, and its
+# direction relative to u_in is
+#
+#     tan(psi) = d_m sin(Omega) / (d_h + d_m cos(Omega))
+#
+# so the *shape* fixes the ratio d_m / d_h = sin(psi) / sin(Omega - psi), and
+# conversely a wanted ratio fixes the shape's chord angle.  Take the ratio from
+# the stems themselves:
+#
+#     d_h = rho r_h,   d_m = rho r_m
+#
+# which is the one rule that makes both straight runs vanish *together* at
+# rho = 1, so the family reaches as far as the stems allow on both sides rather
+# than being capped by the shorter one.  The required chord angle is then closed
+# form,
+#
+#     psi = atan2(r_m sin Omega, r_h + r_m cos Omega)
+#
+# and the whole configuration scales linearly in rho about the centre, so the
+# depth is again proportional to rho: one evaluation and one division.
+#
+# The cost is one inversion, psi(peak) = psi_required, over the shape's skew.
+# Unlike F6's taper schedule that inversion depends on r_h and r_m, so it is a
+# per-design constant rather than a universal one.
+
+def skewed_cosine(peak: float) -> HumpShape:
+    """Raised-cosine rise to a peak at `peak`, raised-cosine fall after it.
+
+    The asymmetric analogue of F3: `k` and `k'` are both continuous, `k`
+    vanishes at both ends, there is exactly one maximum, and there is no
+    plateau -- but the maximum can sit anywhere.  One dial, no free constant.
+    """
+    peak = min(max(peak, 1e-6), 1.0 - 1e-6)
+
+    def phi(t: float) -> float:
+        if t <= 0.0 or t >= 1.0:
+            return 0.0
+        if t < peak:
+            return 0.5 * (1.0 - math.cos(math.pi * t / peak))
+        return 0.5 * (1.0 - math.cos(math.pi * (1.0 - t) / (1.0 - peak)))
+
+    # Full precision in the key, for the same reason as tukey_shape.
+    return HumpShape(f"a1p{peak:.17g}", f"A1 skewed cosine, peak {peak:.3f}",
+                     phi, breaks=(peak,))
+
+
+def _hump_chord_angle(shape: HumpShape, turn: float) -> float | None:
+    """Direction of the unit hump's chord, relative to its start tangent."""
+    unit = _hump_unit(shape, turn)
+    if unit is None:
+        return None
+    points, _, g, _ = unit
+    if g < 1e-12:
+        return None
+    return math.atan2(points[-1][1], points[-1][0])
+
+
+def _solve_skew(turn: float, wanted: float) -> float | None:
+    """Peak position whose chord angle matches `wanted`.  Monotone decreasing
+    in the peak position: moving the turn later swings the chord back."""
+    lo, hi = 1e-4, 1.0 - 1e-4
+    a_lo = _hump_chord_angle(skewed_cosine(lo), turn)
+    a_hi = _hump_chord_angle(skewed_cosine(hi), turn)
+    if a_lo is None or a_hi is None:
+        return None
+    if not (min(a_lo, a_hi) - 1e-9 <= wanted <= max(a_lo, a_hi) + 1e-9):
+        return None                       # out of the family's reach
+    for _ in range(48):
+        mid = 0.5 * (lo + hi)
+        a_mid = _hump_chord_angle(skewed_cosine(mid), turn)
+        if a_mid is None:
+            return None
+        if (a_mid - wanted) * (a_lo - wanted) > 0.0:
+            lo, a_lo = mid, a_mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def required_chord_angle(hour_tangent: float, minute_tangent: float,
+                         turn: float) -> float:
+    """The chord angle a hump must have to join tangent lengths d_h and d_m.
+
+    From the triangle at the centre: the chord S -> E is
+    d_h * u_in + d_m * u_out, so its direction relative to u_in is
+    atan2(d_m sin Omega, d_h + d_m cos Omega).  Inverting,
+    d_m / d_h = sin(psi) / sin(Omega - psi); psi = Omega/2 gives d_h = d_m,
+    which is why a symmetric hump is stuck with equal tangent lengths.
+    """
+    return math.atan2(minute_tangent * math.sin(turn),
+                      hour_tangent + minute_tangent * math.cos(turn))
+
+
+def build_asymmetric_centerline(
+    hours: int, minutes: int,
+    depth_rule=None,
+    face: G.Face = G.Face(),
+    stems: G.Stems = G.DEFAULT_STEMS,
+    connector_samples: int = G.CONNECTOR_SEGMENTS,
+) -> BetaCenterline:
+    """A1: F3 with uneven tangent lengths once the shorter stem runs out.
+
+    A symmetric hump must meet both radials at the same distance from the
+    centre, so the shorter stem caps the reach and the longer stem's surplus is
+    wasted.  Skewing the hump lifts that cap.  The rule engages only as far as
+    the depth target demands:
+
+        d_h = min(r_h, d),   d_m = min(r_m, d)
+
+    so below the symmetric ceiling nothing is skewed and this *is* F3, and
+    above it the shorter tangent sticks at r_h while the longer one grows.  The
+    skew is continuous through the handover and it is never larger than needed.
+
+    Proportional tangent lengths (d_h = rho r_h, d_m = rho r_m) would be tidier
+    -- both straight runs would vanish together, and psi would be closed form --
+    but it is not reachable: a skewed raised cosine's mass is proportional to
+    its two ramp widths, so its chord angle spans only a narrow band around
+    Omega/2, and the ratio it can deliver runs from about 0.86..1.17 near
+    overlap to 0.42..2.36 near opposition.  The current stems already want 1.20.
+    """
+    rule = depth_rule or G.CANDIDATES_BY_KEY["d1-arc-sin"].rule
+    reference = G.build_centerline(hours, minutes, rule, face, stems)
+    ctx = reference.context
+    centre = ctx.center
+    A, B = reference.hour_connector, reference.minute_connector
+    u_in = G.scale(ctx.hour_radial, -1.0)
+    u_out = ctx.minute_radial
+    target = G.norm(G.sub(reference.pivot, centre))
+
+    sign = 1.0 if G.cross(u_in, u_out) >= 0.0 else -1.0
+    delta = math.acos(max(-1.0, min(1.0, ctx.radial_dot)))
+    turn = math.pi - delta
+    r_h, r_m = ctx.hour_inner, ctx.minute_inner
+    r_lo, r_hi = min(r_h, r_m), max(r_h, r_m)
+
+    def configure(d):
+        """Tangent lengths, hump and depth at dial `d`.  None if unreachable."""
+        d_h, d_m = min(r_h, d), min(r_m, d)
+        if turn < 1e-9 or d <= 1e-12:
+            return dict(d_h=d_h, d_m=d_m, peak=0.5, hump=None, kappa=None,
+                        H=0.0, depth=0.0)
+        peak = _solve_skew(turn, required_chord_angle(d_h, d_m, turn))
+        if peak is None:
+            return None
+        unit = _hump_unit(skewed_cosine(peak), turn)
+        if unit is None:
+            return None
+        unit_points, unit_k, g, _ = unit
+        S = G.add(centre, G.scale(ctx.hour_radial, d_h))
+        E = G.add(centre, G.scale(u_out, d_m))
+        H = G.norm(G.sub(E, S)) / g
+        if H < 1e-9:
+            # At exact overlap both radials coincide, so S and E are the same
+            # point and there is no hump: the connector is the fold, which is
+            # the shape wanted there anyway.
+            return dict(d_h=d_h, d_m=d_m, peak=0.5, hump=None, kappa=None,
+                        H=0.0,
+                        depth=min(_segment_distance(A, S, centre),
+                                  _segment_distance(E, B, centre)))
+        start = math.atan2(u_in[1], u_in[0])
+        ca, sa = math.cos(start), math.sin(start)
+        hump, kappa = [], []
+        for (px, py), k in zip(unit_points, unit_k):
+            py = py * sign
+            hump.append((S[0] + H * (px * ca - py * sa),
+                         S[1] + H * (px * sa + py * ca)))
+            kappa.append(abs(k) / H)
+        depth = min([G.norm(G.sub(p, centre)) for p in hump]
+                    + [_segment_distance(A, S, centre),
+                       _segment_distance(E, B, centre)])
+        return dict(d_h=d_h, d_m=d_m, peak=peak, hump=hump, kappa=kappa,
+                    H=H, depth=depth)
+
+    # Below the symmetric ceiling the depth is exactly linear in the dial, so
+    # one probe settles it without any search.
+    probe = configure(r_lo)
+    clamped = False
+    if probe is None:
+        chosen = configure(0.0)
+    elif probe["depth"] >= target:
+        scale = target / probe["depth"] if probe["depth"] > 1e-12 else 0.0
+        chosen = configure(r_lo * scale)
+        if chosen is None:
+            chosen = configure(0.0)
+    else:
+        # Shorter stem exhausted: grow the longer tangent, skewing as we go.
+        lo, hi, best = r_lo, r_hi, probe
+        for _ in range(34):
+            mid = 0.5 * (lo + hi)
+            trial = configure(mid)
+            if trial is None:
+                hi = mid
+                continue
+            if trial["depth"] > target:
+                hi = mid
+            else:
+                lo, best = mid, trial
+        top = configure(hi)
+        if top is not None and top["depth"] <= target:
+            best = top
+        chosen = best
+        clamped = chosen["depth"] < target - 0.01
+
+    d_h, d_m = chosen["d_h"], chosen["d_m"]
+    H = chosen["H"]
+    S = G.add(centre, G.scale(ctx.hour_radial, d_h))
+    E = G.add(centre, G.scale(u_out, d_m))
+    alpha, beta = r_h - d_h, r_m - d_m
+    total = alpha + H + beta
+    n_hump = 0 if H <= 1e-9 else max(2, min(
+        connector_samples - 2,
+        int(round(connector_samples * (0.5 + 0.5 * H / max(total, 1e-9))))))
+    rest = connector_samples - n_hump
+    share = alpha / (alpha + beta) if (alpha + beta) > 1e-12 else 0.5
+    n_h = max(1, min(rest - 1, int(round(rest * share))))
+    n_m = rest - n_h
+
+    points, kappas = [], []
+    for i in range(n_h + 1):
+        points.append(G.add(A, G.scale(G.sub(S, A), i / n_h)))
+        kappas.append(0.0)
+    if n_hump:
+        hump, kappa = chosen["hump"], chosen["kappa"]
+        last = len(hump) - 1
+        for i in range(1, n_hump + 1):
+            j = min(last, int(round(last * i / n_hump)))
+            points.append(hump[j])
+            kappas.append(kappa[j])
+        points[-1], kappas[-1] = E, 0.0
+    for i in range(1, n_m + 1):
+        points.append(G.add(E, G.scale(G.sub(B, E), i / n_m)))
+        kappas.append(0.0)
+
+    exact_depth = (min(_segment_distance(points[i], points[i + 1], centre)
+                       for i in range(len(points) - 1))
+                   if H <= 1e-9 else chosen["depth"])
+    pivot_index = min(range(len(points)),
+                      key=lambda i: G.norm(G.sub(points[i], centre)))
+    stem_h = [G.add(reference.hour_tip,
+                    G.scale(G.sub(A, reference.hour_tip), i / G.HOUR_STEM_SEGMENTS))
+              for i in range(G.HOUR_STEM_SEGMENTS)]
+    stem_m = [G.add(B, G.scale(G.sub(reference.minute_tip, B),
+                               i / G.MINUTE_STEM_SEGMENTS))
+              for i in range(1, G.MINUTE_STEM_SEGMENTS + 1)]
+    return BetaCenterline(
+        points=stem_h + points + stem_m,
+        hour_tip=reference.hour_tip, minute_tip=reference.minute_tip,
+        hour_connector=A, minute_connector=B,
+        pivot=points[pivot_index], context=ctx,
+        peak=chosen["peak"],
+        concentration=(0.0 if H <= 0.0 else abs(turn) / H),
+        arc_length=total, curvatures=kappas, degenerate=(H <= 1e-9),
+        family="a1", exact_depth=exact_depth,
+        tangent_length=d_h, hump_length=H, clamped=clamped,
+    )

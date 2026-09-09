@@ -60,6 +60,7 @@ ROWS_FINAL = (
     ("f4", "F4  constant k -- pure arc, reads machined"),
     ("f3", "F3  raised cosine -- swoopiest, but runs short past d=83"),
     ("f6", "F6  adaptive taper: the smoothest k that reaches the depth"),
+    ("a1", "A1  F3 + uneven tangent lengths (asymmetric k)"),
 )
 
 #: How much of the connector is straight: the exponent in d = min(r) sin(d/2)^p.
@@ -81,6 +82,8 @@ def build(kind, hour, minute, face, stems):
     if kind == "f6":
         return CV.build_compact_centerline(hour, minute, CV.adaptive_shape,
                                            D1.rule, face, stems)
+    if kind == "a1":
+        return CV.build_asymmetric_centerline(hour, minute, D1.rule, face, stems)
     power = None
     if "@" in kind:
         kind, raw = kind.split("@")
@@ -119,8 +122,10 @@ def annotate(cl, kind, centre):
     note += f"  rev={reverse_turn(cl.points):.2f}d"
     if kind == "f1":
         note += "  FOLD" if cl.degenerate else f"  nu={cl.concentration:.3g}"
-    elif kind[0] == "f":
+    elif kind[0] in "fa":
         note += f"  d={cl.tangent_length:.0f}"
+        if kind == "a1":
+            note += f"  peak={cl.peak:.2f}"
         if kind == "f6":
             import math as _m
             rho = CV.adaptive_taper(_m.acos(max(-1.0, min(1.0,
