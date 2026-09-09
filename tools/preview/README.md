@@ -104,6 +104,12 @@ triangle A-B-centre.
   `geometry.py`'s D1 at every hand position in every stem configuration (4320
   cases; agrees to 3e-4 px, which is float32 against float64).  Needs a C
   compiler, which nothing else here does.
+- `check_c_build.py` -- compiles the whole geometry half of `main.c` on its own
+  (everything above the geometry cache touches only six Pebble symbols, which
+  it stubs) and runs the per-minute rebuild for all 720 hand positions.  A
+  smoke test before an SDK build, and a check that a geometry edit has not
+  quietly multiplied the work: it reports square-root and division counts,
+  which are the numbers that mean anything on the watch.
 - `render_anim.sh` -- the only part needing an external binary: Chromium
   (`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, overridable with
   `CHROME=`) to rasterize the frames. Override the output scale with `SCALE=2`.

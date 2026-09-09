@@ -1156,3 +1156,72 @@ as fixed literals, so there is nothing yet to constrain. When they become
 settings, the constraint belongs on the ratio of the resulting inner radii
 `r_h = L_h (1 - stem_h)` and `r_m = L_m (1 - stem_m)`, not on the stem ratios
 themselves -- the hand lengths are in between.
+
+## 35. What a rebuild costs
+
+Measured with `tools/preview/check_c_build.py`, which compiles the geometry half
+of `main.c` on its own and runs the per-minute rebuild for all 720 hand
+positions. `square_root_float()` is the dominant arithmetic, so its call count
+is the figure that transfers to the watch; the microseconds are a desktop
+number and mean nothing on ARM.
+
+**Per rebuild: 205 square roots, 615 divisions inside them.** Where they go:
+
+| | square roots per rebuild |
+|---|---:|
+| `build_centerline` (including the pivot and both 4x4 solves) | 14 |
+| `update_cumulative_lengths` | 48 |
+| `calculate_centerline_tangent`, over the 49 polygon points | 143 |
+
+The structure around it is already about as tight as it can be, and none of
+this is worth touching:
+
+- All storage is static -- `s_centerline`, `s_cumulative_length`,
+  `s_polygon_points` and the solver workspace come to roughly 1.2 KB, and there
+  is no allocation at runtime at all.
+- `gpath_create` runs once in `init()` and `gpath_destroy` once in `deinit()`.
+  No path churn per frame.
+- The tick subscription is `MINUTE_UNIT`, so there are no per-second wakeups,
+  and `ensure_geometry` caches on a `time_key` of `hour % 12 * 60 + minute`.
+  A rebuild happens once a minute and the draw proc hits the cache.
+- The solver workspace's fixed sparse entries are set once at init, not per
+  rebuild.
+
+**`square_root_float`'s three Newton steps are exactly right.** From the
+exponent-halving seed, worst-case relative error over the range the geometry
+actually feeds it:
+
+| Newton steps | relative error |
+|---:|---:|
+| 0 (seed only) | 6.1e-2 |
+| 1 | 1.7e-3 |
+| 2 | 1.6e-6 |
+| **3 (shipped)** | **8.9e-8** |
+| 4 | 8.9e-8 |
+
+`FLT_EPSILON` is 1.19e-7, so three steps reach float precision and a fourth
+gains nothing, while two would be thirteen times too coarse. On hardware with
+an FPU a single `sqrtf()` would be several times faster than this, but that is
+a deliberate portability choice and it is documented as one.
+
+### The one real redundancy, and why it is still not worth it
+
+`calculate_centerline_tangent` recomputes the two adjacent segment lengths at
+every polygon point -- lengths `update_cumulative_lengths` has just finished
+computing. Caching the per-segment unit direction there instead drops the
+rebuild from **205 square roots to 109** and from 615 divisions to 327, and it
+shortens `calculate_centerline_tangent` from about seventy lines with four
+epsilon branches to twenty-five with one. Verified in the harness to produce a
+**bit-identical polygon**.
+
+It is still 96 square roots once a minute. Not a reason on its own to touch
+working code; worth doing if that function is being edited anyway.
+
+The same applies, smaller, to `calculate_pivot_point`: it recomputes the two
+radial directions and the two inner radii that `build_centerline` already has
+or computes later for `branch_clearance`, which is four of the 205. Reusing
+them would agree to 2.7e-7 in the unit vectors -- about 1e-5 px on the pivot --
+so it is free to do, and it is deliberately not done: the existing file already
+computes `radial_dot` in both places, and a pivot rule that derives everything
+it needs from its own arguments is easier to check against the model than one
+handed six loose floats.
