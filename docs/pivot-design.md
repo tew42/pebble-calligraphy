@@ -1425,3 +1425,112 @@ The choice is which way to resolve it:
 
 Either is defensible and they look quite different. This is where "natural" gets
 decided, and it is not a question measurement can settle.
+
+# Round 9: the envelope's open questions, rendered
+
+## 42. What the mock-ups settled
+
+Sheets: `workshop-clearance.svg`, `workshop-pressure.svg`,
+`workshop-easing.svg`, `workshop-tangent.svg` and `-wide`. Every variant is
+compiled out of `main.c` with one `#define` rewritten or one function body
+substituted in the extracted copy, so each row is the real code with one thing
+changed. `main.c` is never written to.
+
+**First, a harness flaw worth recording.** The driver in `sheet_envelope.py`
+originally re-derived the waist and the pressure term itself rather than reading
+what `build_stroke_polygon` used. So the numbers it printed came from a copy of
+the formula, and a patch to the real expression changed the drawn shape while
+leaving the reported figures untouched -- which is exactly the sort of quiet
+disagreement between instrument and subject that makes a measurement worthless.
+`build_stroke_polygon`'s own loop is now instrumented directly.
+
+### 1. Branch clearance: keep it, and my earlier framing was wrong
+
+I called the term "inert at 705 of 720 positions" and implied that was the
+defect. The renders say otherwise. At exactly 12:00 the term takes the waist to
+1 px and the fold draws as a clean hairline needle; **deleted, the 3 px waist
+gives a blunt end with a visible notch** where the polygon crosses itself. So
+the narrow band it acts in is the band that needs it -- the calibration is not
+a mistake, it is doing a small job in the only place the job exists.
+
+Retuning the divisor so it acts out to `delta` ~26 is clearly worse: it puts a
+visible pinch through the whole near-overlap band, an hourglass neck in the
+middle of what should be one confident mark. Width departures from shipped:
+deleted 2.001 px (all of it at 12:00), retuned 1.762 px (spread across
+`delta` 5 to 22).
+
+**Verdict: leave it alone.** The one thing worth doing is renaming it, since
+"branch clearance" describes an intent it does not serve; what it actually does
+is taper the waist to a hairline as the hands converge.
+
+### 2. Pressure envelope: the intent is real but needs 5x the amplitude
+
+Largest width departure from off: shipped **0.130 px**, at 1.0 **0.652 px**, at
+2.0 **1.303 px**, and pivot-centred at 2.0 **0.963 px**.
+
+Rendered above 1:1 the intent is legible from about 1.0: the hour body carries
+more weight and the minute half lightens. At 2.0 it is unmistakable -- and
+probably too much, because the minute arm gets noticeably faint at wide
+separations, which costs minute legibility on a watch face.
+
+Re-centring the `4p(1-p)` envelope on the pivot rather than arc-midpoint
+balances the two lobes, and at the same amplitude it is a gentler change
+(0.963 px against 1.303 px) because the thinning lobe no longer outweighs the
+thickening one. If the term is kept it should be re-centred; if it is kept at
+0.20 it should be deleted instead, because at that amplitude it is decoration
+that costs a constant.
+
+### 3. Contraction and taper: the easing is not the lever, the breakpoint is
+
+This one inverted on measurement. Largest width departure from linear easing:
+smoothstep (shipped) **0.295 px**, smootherstep **0.449 px**, half-cosine
+**0.323 px**. The strokes are indistinguishable.
+
+The reason is arithmetic, and it generalises: **any easing between two widths
+`w` apart can only move the result by about `0.1 w`**, because that is the
+largest gap between smoothstep and a straight line. Every width range in this
+profile is 3 px or less, so no easing choice can move anything by more than
+about a third of a pixel. Re-easing the contraction cannot produce a different
+stroke.
+
+Moving the *breakpoint* can. Holding the body before contracting at all:
+40% of the hour side departs by **1.244 px**, 70% by **2.113 px**, and both are
+plainly visible -- 70% reads as a held bar with a late taper rather than a
+continuous modulation. So the workshop question is a breakpoint question, and
+the honest cost is that a hold position is a new constant.
+
+### 4. Bisector tangent: harmless now, and it triples with the width
+
+Comparing the shipped finite-difference bisector against tangents derived from
+a 4x-denser sampling of the same curve, holding the widths identical so the
+whole difference is where the offset lands:
+
+| delta | outline moves, shipped widths | at 3x widths |
+|---:|---:|---:|
+| 5.5 | 0.562 px | 1.056 px |
+| 11.0 | 0.296 | 1.177 |
+| 16.5 | 0.162 | 0.647 |
+| 27.5 | 0.045 | 0.181 |
+| 90.0 | 0.010 | 0.042 |
+
+**Worst 0.562 px as shipped, 1.177 px at 3x widths**, and entirely confined to
+`delta <= 17`. So: not worth touching now. The conditional stands -- the error
+is an angle, so its cost scales with the width, and if the merge band is ever
+thickened this becomes a pixel-scale artifact at exactly the separations that
+thickening targets. The fix at that point is to store the analytic Hermite
+tangent (49 x Vec2 = 392 bytes) rather than finite-differencing the polyline.
+
+## 43. Where that leaves the envelope
+
+Of the six aesthetic constants, the renders argue for changing exactly two:
+
+- `HOUR_SWELL_POSITION` -- restate as an absolute **3.0 px** rather than 5% of
+  the hour side, which is what it already averages (2.506 to 3.000 px) and
+  removes a 20% drift over the hour for no visible change.
+- `PRESSURE_VARIATION` -- either delete it, or raise it to about 1.0 **and**
+  re-centre the envelope on the pivot. At 0.20 it is a no-op.
+
+The four widths stay as the basic stroke definition, the clearance term stays
+and wants a better name, the easing stays because changing it cannot matter,
+and the tangent stays until and unless the stroke widens. Cross-platform
+scaling of everything above 1 px is still deferred.

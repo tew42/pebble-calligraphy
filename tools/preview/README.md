@@ -116,6 +116,12 @@ triangle A-B-centre.
   sheet shows what the watch fills rather than a re-port of it.  Marks the two
   offset-curve failure modes (inner-offset cusp, self-collision), both of which
   are live near overlap.  Needs a C compiler.
+- `sheet_workshop.py` -- mock-ups for the open envelope questions.  Every
+  variant is compiled out of `main.c` with either a `#define` rewritten or one
+  function body substituted, in the *extracted copy*, so what is drawn is the
+  real code with one thing changed and `main.c` is never touched.  Each row is
+  annotated with how far it departs from the baseline row, in pixels, because
+  the differences are usually too small to see unaided.
 - `render_anim.sh` -- the only part needing an external binary: Chromium
   (`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, overridable with
   `CHROME=`) to rasterize the frames. Override the output scale with `SCALE=2`.

@@ -91,25 +91,16 @@ int main(void) {
       center, 100.0f,
       hour_to_pebble_angle(hour, minute),
       minute_to_pebble_angle(minute));
-    build_stroke_polygon(r.pivot_index, r.center_width_scale);
-
-    const float total = s_cumulative_length[CENTERLINE_POINT_COUNT - 1];
-    const float pivot_position = s_cumulative_length[r.pivot_index] / total;
-    const float middle = interpolate_float(
-      1.0f, MIDDLE_WIDTH, smooth_unit(r.center_width_scale));
-
+    /* Arc lengths first so the T line can carry the total, then the polygon,
+       whose own loop prints the C lines.  update_cumulative_lengths is
+       idempotent, so build_stroke_polygon repeating it is harmless. */
+    update_cumulative_lengths();
     printf("T %d %d %u %.6f %.6f\n",
-           hour, minute, r.pivot_index, total, r.center_width_scale);
-    for (int i = 0; i < CENTERLINE_POINT_COUNT; ++i) {
-      const float p = s_cumulative_length[i] / total;
-      float w = calculate_stroke_width(p, pivot_position, middle);
-      w *= 1.0f + PRESSURE_VARIATION * (4.0f * p * (1.0f - p))
-                  * (pivot_position - p);
-      const float adjusted = w - OUTLINE_WIDTH_COMPENSATION;
-      printf("C %d %.4f %.4f %.4f %.4f\n", i,
-             s_centerline[i].x, s_centerline[i].y,
-             w, adjusted > 0.0f ? adjusted : 0.0f);
-    }
+           hour, minute, r.pivot_index,
+           s_cumulative_length[CENTERLINE_POINT_COUNT - 1],
+           r.center_width_scale);
+
+    build_stroke_polygon(r.pivot_index, r.center_width_scale);
     for (int i = 0; i < POLYGON_POINT_COUNT; ++i) {
       printf("P %d %d %d\n", i, s_polygon_points[i].x, s_polygon_points[i].y);
     }
@@ -119,11 +110,53 @@ int main(void) {
 """
 
 
-def build(directory):
+def build(directory, overrides=None, patches=None):
+    """Extract the geometry half of main.c, optionally altered, and compile it.
+
+    `overrides` maps a `#define` name to a replacement value; the define line is
+    rewritten in the *extracted copy*.  `-Dname=value` will not do: the defines
+    are unguarded, so the command line would collide with them.
+
+    `patches` is a list of (old, new) text substitutions, for the questions that
+    need a different function body rather than a different constant.  Each must
+    match exactly once, or it is a mistake and raises rather than silently
+    rendering the unmodified code.
+
+    `main.c` is never written to; reverting an experiment is deleting a
+    dictionary entry.
+    """
     source = open(MAIN_C).read()
     cut = source.index("/* ------------------------------------------------"
                        "------------------------- */\n/* Geometry cache")
     body = source[:cut].replace("#include <pebble.h>", "", 1)
+
+    # Always instrument build_stroke_polygon's own loop.  The driver used to
+    # re-derive the width, which meant it printed numbers the polygon was not
+    # built from -- so a patch to the width expression was invisible in the
+    # reported figures while still changing the drawn shape.
+    anchor = """    const float half_width =
+      polygon_width * 0.5f;"""
+    if body.count(anchor) != 1:
+        raise SystemExit("could not find the half_width anchor to instrument")
+    body = body.replace(anchor, anchor + """
+
+    printf("C %d %.4f %.4f %.4f %.4f\\n", index,
+           s_centerline[index].x, s_centerline[index].y,
+           stroke_width, polygon_width);""")
+
+    for name, value in (overrides or {}).items():
+        pattern = re.compile(r"^#define[ \t]+" + re.escape(name) + r"[ \t]+.*$",
+                             re.MULTILINE)
+        body, count = pattern.subn(f"#define {name} {value}", body)
+        if count != 1:
+            raise SystemExit(f"override {name}: matched {count} define lines")
+
+    for old, new in (patches or ()):
+        if body.count(old) != 1:
+            raise SystemExit(f"patch matched {body.count(old)} times, want 1:"
+                             f"\n{old[:200]}")
+        body = body.replace(old, new)
+
     path = os.path.join(directory, "envelope.c")
     open(path, "w").write(STUB + body + DRIVER)
     binary = os.path.join(directory, "envelope")
@@ -132,10 +165,10 @@ def build(directory):
     return binary
 
 
-def gather():
+def gather(times=None, overrides=None, patches=None):
     with tempfile.TemporaryDirectory() as directory:
-        binary = build(directory)
-        payload = "\n".join(f"{h} {m}" for h, m in TIMES) + "\n"
+        binary = build(directory, overrides, patches)
+        payload = "\n".join(f"{h} {m}" for h, m in (times or TIMES)) + "\n"
         result = subprocess.run([binary], input=payload, capture_output=True,
                                 text=True, check=True)
     frames, current = [], None
