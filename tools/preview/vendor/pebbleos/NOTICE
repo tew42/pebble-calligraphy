@@ -1,0 +1,16 @@
+This directory contains unmodified third-party source code.
+
+PebbleOS
+Copyright 2024 Google LLC
+Licensed under the Apache License, Version 2.0 (see ./LICENSE).
+
+Upstream: https://github.com/coredevices/PebbleOS
+
+These files are vendored so that the preview harness in tools/preview can
+rasterize using the firmware's own scanline fill and line routines instead of
+an approximation of them. They are not part of the watchface: nothing under
+src/ links against this directory, and the .pbw build does not see it.
+
+No vendored file has been edited. Everything needed to compile them against a
+host framebuffer lives outside this directory, in tools/preview/raster/shim/,
+which is original work under the repository's own licence.
