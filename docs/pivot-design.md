@@ -1534,3 +1534,77 @@ The four widths stay as the basic stroke definition, the clearance term stays
 and wants a better name, the easing stays because changing it cannot matter,
 and the tangent stays until and unless the stroke widens. Cross-platform
 scaling of everything above 1 px is still deferred.
+
+## 44. The renderer was wrong, and now it is the firmware's
+
+Every sheet up to section 43 drew vectors: real polygon vertices out of
+`main.c`, handed to a browser, which antialiased every edge analytically at 1.35
+to 6x zoom. The watch does none of that, and the arguments in sections 40-43
+turn on half a pixel of waist on a one-to-three pixel stroke. So the renderer
+was replaced with the firmware's own, vendored under `tools/preview/vendor/pebbleos`
+at upstream commit `6e9c7c29`, and driven by the geometry already extracted from
+`main.c`. `tools/preview/raster.py` returns framebuffers; `sheet_raster.py` draws
+one pixel per rect at integer magnification.
+
+**Fills are not antialiased in effect, and this is why.** The claim at lines 595,
+752, 1306 and 1321 stands, but the mechanism is more specific than "no AA":
+`gpath_draw_filled` *does* branch on the antialias flag and *does* run a separate
+antialiased scanline fill. That path then does three things which together cancel
+it out for a stroke like this one:
+
+- `gpath.c:102` increments the span's start and decrements its end before
+  drawing anything, so every span is **eroded one pixel on each side**. This is
+  exactly what `OUTLINE_WIDTH_COMPENSATION 1.0f` exists to put back.
+- The partial coverage is written to pixel `A+1`, which ought to be solid,
+  instead of feathering outward onto pixel `A`. It **dims the interior edge**
+  rather than softening the boundary.
+- `graphics_private_raw.c:17` sets `alpha = factor * 3 / 7` from a 0-8 factor, so
+  factors 6 and 7 both truncate to nothing and 7 and 8 both to opaque.
+
+Measured on the vendored code, for a band 20 px wide:
+
+| edge lean over 20 rows | AA vs non-AA output | partial px/row | drawn width |
+| --- | --- | --- | --- |
+| vertical | **byte-identical** | 0.00 | 19.00 |
+| 1-5 px | differs | ~1.0 | ~19.4 |
+| exactly 45 degrees | **byte-identical** | 0.00 | 19.00 |
+| shallow (40 px) | differs | 2.00 | 20.00 |
+
+A hand stroke is a near-vertical band with integer vertices, so the fill is
+byte-identical to the unantialiased path and one pixel narrow. **All of the
+visible soft edge comes from the outline pass**, which is a 1 px Wu-Xiang line
+that itself skips antialiasing entirely at horizontal, vertical and exactly 45
+degrees.
+
+Two further constraints, both of which bound what any envelope change can
+possibly do:
+
+- **Coverage has four levels**, not 256: black, one third, two thirds, white.
+- **Filled paths take integer vertices only.** `gpath_fill_precise_internal`
+  downconverts, commented "no real support for filled paths with GPointPrecise,
+  yet". So a sub-pixel width change reaches the framebuffer *only* by flipping a
+  `vec2_to_gpoint` rounding.
+
+### How far this is verified
+
+`tools/preview/check_raster.py` reproduces the geometry of five of the
+firmware's own `gpath` unit-test fixtures -- a self-crossing path, a path with
+duplicate points, a degenerate two-point path, and two with a clip box -- and
+matches the committed reference images **bit for bit, 0 of 45,600 pixels
+differing** on each. The self-crossing case is the one the design leans on at
+hand overlap. It also confirms the raster ink lands in exactly the same bounding
+box as the vector polygon, on all six representative positions.
+
+Not verified: there is no committed reference for an antialiased 1 px line at
+8-bit colour, because the `draw_line` fixtures are all for `asterix`, a 1-bit
+board where antialiasing is compiled out. The outline pass rests instead on the
+vendored rasterizer being unmodified, on a shim surface that the bit-exact fill
+fixtures already cover, and on source-derived predictions that the checks assert.
+
+### One correction to the earlier sheets
+
+`sin_lookup` is a 257-entry quarter-wave table with linear interpolation, and it
+is now vendored rather than approximated. Every sheet before this one used libm
+instead, which moves at least one pixel on **22 of the 720 displayed minutes**,
+by up to 5 lit pixels. Where a vector sheet and a raster sheet disagree slightly
+on the waist scale -- up to 1.7e-4 -- the raster figure is the correct one.

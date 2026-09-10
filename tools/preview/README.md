@@ -28,12 +28,23 @@ Useful flags: `--times 12:00,3:00,4:50`, `--stem-config symmetric`.
 
 ## Scope
 
-This models **the line only** -- the path the pen travels. It deliberately does
-*not* reproduce:
+Most of this models **the line only** -- the path the pen travels. The sheets
+listed under "the line" below deliberately do *not* reproduce the stroke, the
+width profile, the pressure/clearance modulation, or any of the rasterization.
 
-- the stroke, the width profile, or the pressure/clearance modulation,
-- `gpath_draw_filled` / `gpath_draw_outline` rasterization,
-- the antialiasing passes or the minute pixel core.
+Two things here do go all the way to pixels, and they are the authority when
+they disagree with a vector sheet:
+
+- `sheet_envelope.py` compiles `build_stroke_polygon` out of `main.c` and draws
+  the stroke's three passes as vectors.
+- `raster.py` and `sheet_raster.py` link that same extracted geometry against
+  the **firmware's own rasterizer**, vendored under `vendor/pebbleos`, and
+  return a real framebuffer. Use these for anything being judged on how it will
+  look: the device erodes each filled span by a pixel, puts partial coverage on
+  the interior side of the edge, quantizes it to four levels, and gets its
+  entire visible soft edge from the 1 px outline pass -- none of which a browser
+  polygon reproduces. `check_raster.py` matches five firmware unit-test
+  fixtures bit for bit. See `docs/pivot-design.md` section 44.
 
 What it does mirror faithfully, from `src/c/main.c`: the integer trig lookup, the
 radial stem construction, the four-unknown minimum-bending-energy tangent solve

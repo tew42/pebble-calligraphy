@@ -22,6 +22,10 @@ actually reaches:
 | `fw/applib/graphics/graphics_private.c` | span writers and `graphics_private_set_pixel` |
 | `fw/applib/graphics/graphics_private_raw.c` | `g_default_draw_implementation` — the per-pixel blend that quantizes coverage to four levels |
 | `fw/applib/graphics/gtypes.c` | `gcolor_blend` and the 4096-entry blending lookup table |
+| `lib/util/math.c` | `integer_sqrt`, which the stroked-line geometry calls |
+| `lib/util/trig.c` | `sin_lookup`/`cos_lookup` -- a 257-entry quarter-wave table with linear interpolation. Vendored rather than approximated with libm, which would move pixels on 22 of the 720 displayed minutes |
+| `tests/test_images/gpath_filled*_aa.8bit.png` | the firmware's own expected rasterizer output, from its unit-test suite. `check_raster.py` reproduces the geometry of five of these cases and diffs pixel for pixel |
+| `fw/board/display.h` + `fw/board/displays/display_qemu_{emery,gabbro}.h` | the authoritative platform description: emery 200x228 rectangular, gabbro 260x260 round, both 8-bit colour. Selected with `-DCONFIG_BOARD_QEMU_EMERY` or `-DCONFIG_BOARD_QEMU_GABBRO`, so the dimensions and `PBL_COLOR`/`PBL_RECT` come from the firmware rather than from me |
 
 Headers are vendored only where the .c files need the real definitions
 (`gtypes.h` and friends). `gcontext.h`, `graphics.h` and the platform headers
@@ -35,6 +39,23 @@ in that script to move to a newer upstream, then re-run
 `tools/preview/check_raster.py` — its expectations were derived from this
 commit's arithmetic and a rasterizer change upstream should make them fail
 rather than pass quietly.
+
+## What this verifies, and what it does not
+
+`check_raster.py` renders five of the firmware's own gpath test fixtures --
+including a self-crossing path, a path with duplicate points, a degenerate
+two-point path, and two cases with a clip box -- and matches the committed
+reference images **bit for bit, 0 of 45,600 pixels differing** on each. That
+covers the filled path: the scanline structure, the nonzero fill rule, the span
+erosion, the four-level blend, and clipping.
+
+There is **no** committed reference for an antialiased 1 px line at 8-bit
+colour: the `draw_line_*` fixtures are all for `asterix`, which is a 1-bit
+mono board where antialiasing is compiled out entirely. The outline pass is
+therefore verified two weaker ways -- the vendored line rasterizer is
+unmodified, and every shim function it reaches is one the bit-exact fill
+fixtures also exercise -- plus source-derived predictions about where it skips
+antialiasing, which `check_raster.py` asserts.
 
 ## Caveat
 

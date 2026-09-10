@@ -110,8 +110,16 @@ int main(void) {
 """
 
 
-def build(directory, overrides=None, patches=None):
+def build(directory, overrides=None, patches=None, stub=None, driver=None,
+          name="envelope", cflags=(), sources=(), ldflags=("-lm",)):
     """Extract the geometry half of main.c, optionally altered, and compile it.
+
+    `stub` and `driver` default to the ones above, which fake just enough of
+    the Pebble types to compile the geometry standalone.  `raster.py` passes its
+    own pair instead, so the same extraction -- same overrides, same patches --
+    can be linked against the real firmware rasterizer rather than fake types.
+    Everything below this docstring is shared, so an experiment behaves
+    identically whichever way it is rendered.
 
     `overrides` maps a `#define` name to a replacement value; the define line is
     rewritten in the *extracted copy*.  `-Dname=value` will not do: the defines
@@ -157,11 +165,12 @@ def build(directory, overrides=None, patches=None):
                              f"\n{old[:200]}")
         body = body.replace(old, new)
 
-    path = os.path.join(directory, "envelope.c")
-    open(path, "w").write(STUB + body + DRIVER)
-    binary = os.path.join(directory, "envelope")
-    subprocess.run(["gcc", "-std=c11", "-O2", "-w", "-o", binary, path, "-lm"],
-                   check=True)
+    path = os.path.join(directory, name + ".c")
+    open(path, "w").write((STUB if stub is None else stub) + body
+                          + (DRIVER if driver is None else driver))
+    binary = os.path.join(directory, name)
+    subprocess.run(["gcc", "-std=gnu11", "-O2", "-w", *cflags, "-o", binary,
+                    path, *sources, *ldflags], check=True)
     return binary
 
 

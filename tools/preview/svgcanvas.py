@@ -21,6 +21,12 @@ LABEL = "#c9d3de"
 DIM = "#7c8996"
 RAMP = ("#f4d35e", "#ee964b", "#f95d6a", "#a05195", "#4a6fa5")
 
+# The only four values a white-on-black render can contain.  Coverage is
+# quantized to src_color.a = factor * 3 / 7 over a 0..8 factor, so there are two
+# intermediate greys and no more -- these are the real 2-bit-per-channel values
+# expanded to 8 bits, not an even ramp.
+PIXEL_LEVELS = ("#000000", "#555555", "#aaaaaa", "#ffffff")
+
 
 def esc(text: str) -> str:
     return (
@@ -68,14 +74,52 @@ class Canvas:
 
     def polygon(self, points, fill=INK, stroke="none", stroke_width=0.0,
                 opacity=1.0) -> None:
-        """A closed filled path -- for the stroke outline, which is a polygon
-        rather than a polyline."""
+        """A closed filled path, drawn as a vector.
+
+        Diagram use only.  This is *not* how the watch fills a path: the
+        firmware erodes each span by a pixel, puts partial coverage on the
+        interior side of the edge, and quantizes it to four levels, none of
+        which a browser polygon reproduces.  Anything being judged on how it
+        will actually look wants `pixels()` and a framebuffer from raster.py.
+        The `fill-rule` below happens to match the firmware's nonzero winding,
+        but the resemblance stops there."""
         coordinates = " ".join(f"{fmt(x)},{fmt(y)}" for x, y in points)
         self.parts.append(
             f'<polygon points="{coordinates}" fill="{fill}" '
             f'stroke="{stroke}" stroke-width="{fmt(stroke_width)}" '
             f'fill-rule="nonzero" opacity="{fmt(opacity)}"/>'
         )
+
+    def pixels(self, x, y, rows, scale=1.0, palette=None, gap=0.0) -> None:
+        """Draw a framebuffer as actual pixels, magnified by `scale`.
+
+        `rows` is a list of rows of small integers -- what raster.as_levels
+        returns -- and `palette` maps those to colours, defaulting to the four
+        levels the device can produce.  Runs of equal value within a row become
+        one rect, which keeps a full 200x228 frame to a few hundred elements
+        instead of 45,600, so a multi-panel sheet stays cheap.  Level 0 is the
+        background and is not emitted at all.
+
+        Deliberately no smoothing and no image element: a pixel is a rect of
+        exactly `scale` units, so what is on the sheet is what is in the
+        framebuffer.  `gap` insets each rect slightly, which at large
+        magnifications makes the pixel grid itself legible.
+        """
+        colours = palette or PIXEL_LEVELS
+        for row_index, row in enumerate(rows):
+            column = 0
+            width = len(row)
+            while column < width:
+                value = row[column]
+                run = 1
+                while column + run < width and row[column + run] == value:
+                    run += 1
+                if value:
+                    self.rect(x + column * scale + gap * 0.5,
+                              y + row_index * scale + gap * 0.5,
+                              run * scale - gap, scale - gap,
+                              fill=colours[value])
+                column += run
 
     def line(self, x1, y1, x2, y2, stroke=GUIDE, stroke_width=0.6, opacity=1.0,
              dash=None):
