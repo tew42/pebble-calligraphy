@@ -237,6 +237,32 @@ notes.append(f"waist scale differs from the vector harness by up to "
              f"{worst_scale:.1e} -- that is the vector harness's libm trig, not "
              f"a wiring error; the raster figure is the correct one")
 
+# ---------------------------------------------------------------------------
+print("\n10. Python-built variants go through the same pipeline")
+# The workshop sheets build some candidate envelopes in Python. That is only a
+# fair comparison if the Python reproduction of the *shipped* envelope is
+# pixel-identical to the C -- otherwise a row's difference could be an artefact
+# of the reconstruction rather than the variant. It also catches the read loop
+# in polygon_main.c silently stopping after one frame.
+import sheet_workshop as workshop
+
+t_times = ((12, 1), (12, 2), (12, 3), (12, 5), (12, 8))
+built = raster.gather(times=t_times)
+specs = []
+for f in built:
+    points = [(x, y) for x, y, _, _ in f["centerline"]]
+    widths = [w for _, _, _, w in f["centerline"]]
+    specs.append((workshop.polygon_from(points, widths,
+                                        workshop.bisector_tangents(points)),
+                  [(x, y) for x, y, _, _ in f["centerline"][f["pivot"]:]]))
+replayed = raster.render_polygons(specs)
+check("frames returned by render_polygons", len(replayed), len(t_times))
+check("of them non-empty", sum(1 for r in replayed if sum(r["census"][1:])),
+      len(t_times))
+check("pixel-identical to the C-built envelope",
+      sum(1 for a, b in zip(built, replayed) if a["buffer"] == b["buffer"]),
+      len(t_times))
+
 print()
 for n in notes:
     print(f"  note: {n}")

@@ -1608,3 +1608,89 @@ is now vendored rather than approximated. Every sheet before this one used libm
 instead, which moves at least one pixel on **22 of the 720 displayed minutes**,
 by up to 5 lit pixels. Where a vector sheet and a raster sheet disagree slightly
 on the waist scale -- up to 1.7e-4 -- the raster figure is the correct one.
+
+## 45. The four questions, re-answered on real pixels
+
+Sections 42-43 answered these from vector renders. Redrawn through the firmware
+rasterizer, each row now reports two numbers: how far the geometry moved, and
+**how many device pixels actually changed** across the row's five or six clock
+positions. The second decides. One earlier verdict inverts.
+
+### 1. Branch clearance -- keep it
+
+| variant | worst width delta | pixels changed |
+| --- | --- | --- |
+| as shipped | baseline | -- |
+| deleted | 2.001 px | **77** |
+| divisor retuned to act out to d~26 | 1.762 px | **335** |
+
+Deleting it turns hand overlap from a 1 px line into a solid 3 px bar: the waist
+goes 1.00 -> 3.00 at 12:00 and the fold reads as a blob rather than as a pen
+passing through itself. The retuned version pinches the waist across the whole
+5.5-22 degree band (waist 1.24, 1.79, 2.42, 2.89 at 12:01-12:04), which is the
+hourglass shape section 42 already rejected, and costs four times as many pixels
+to do it.
+
+**This corrects section 43's framing.** The term is not "inert above 3.5 degrees
+and therefore nearly pointless" -- the band where it acts is precisely the band
+that needs it, and it is the difference between a line and a blob at the one
+position where the two hands coincide. It stays. Only its name changes; see
+section 46.
+
+### 2. Pressure envelope -- delete it
+
+| PRESSURE_VARIATION | worst width delta | pixels changed |
+| --- | --- | --- |
+| 0 (off) | baseline | -- |
+| 0.20 (shipped) | 0.130 px | **114** |
+| 1.0 | 0.652 px | 371 |
+| 2.0 | 1.303 px | 598 |
+| 2.0, envelope centred on the pivot | 0.963 px | 513 |
+
+**Section 40 was wrong to call this a no-op.** I claimed 0.133 px "cannot
+survive rasterization"; it survives on 114 pixels, because a filled path takes
+integer vertices and a sub-pixel width shift flips roundings. What it does *not*
+do is read as anything: at 0.20 the stroke is indistinguishable from the term
+being off, and amplifying it to 1.0 or 2.0 simply thickens the whole stroke
+(peak 5.99 -> 6.33 -> 6.81) rather than producing the loaded-pen asymmetry it was
+meant to. Re-centring the envelope on the pivot does not rescue it either.
+
+So the verdict lands in the same place as before but for the opposite reason:
+not "it does nothing", but "it does something, and that something is 114 pixels
+of edge noise with no legible intent". Delete it.
+
+### 3. Contraction and taper -- the easing is not the lever
+
+| variant | worst width delta | pixels changed |
+| --- | --- | --- |
+| linear | baseline | -- |
+| smoothstep (shipped) | 0.295 px | 195 |
+| smootherstep | 0.449 px | 259 |
+| half-cosine | 0.323 px | 211 |
+| body held to 40% of the hour side | 1.244 px | 335 |
+| body held to 70% | 2.113 px | 500 |
+
+Confirmed as predicted: any easing between two widths 3 px apart can only move
+the width about 0.3 px, so all four look alike. Moving the **breakpoint** is what
+changes the stroke's character -- the width profile shows a real plateau, and the
+stroke reads as held body then taper rather than one continuous modulation. If
+this is to be workshopped further, it is the breakpoint that is worth moving.
+
+### 4. Bisector tangent -- leave it alone
+
+| variant | outline moves by | pixels changed |
+| --- | --- | --- |
+| shipped bisector, shipped widths | baseline | -- |
+| near-exact tangent, shipped widths | 0.562 px | **4** |
+| shipped bisector, 3x widths | baseline | -- |
+| near-exact tangent, 3x widths | 1.177 px | **35** |
+
+Four pixels across five positions at shipped widths. Even at triple widths --
+past anything the design would do -- 35 pixels across five positions, and the
+two rows are indistinguishable. The finite-difference bisector is fine; using
+the Hermite derivative the centerline already has would be tidier but buys
+nothing.
+
+A harness note that makes this comparison trustworthy: the Python reconstruction
+of the *shipped* bisector is pixel-identical to the C on all five positions, so
+the difference in row 2 is the variant and not the reconstruction.

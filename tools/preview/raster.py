@@ -80,7 +80,14 @@ def cflags(board="emery"):
         "-I" + os.path.join(VENDOR, "fw", "applib", "graphics"),
         "-I" + os.path.join(VENDOR, "include"),
         "-I" + SHIM,
+        "-I" + os.path.join(HERE, "raster"),
     ]
+
+
+# Coverage is quantized to four alpha steps, so a white-on-black render can only
+# ever contain these four bytes. check_raster.py asserts exactly that.
+LEVELS = {0xC0: 0, 0xD5: 1, 0xEA: 2, 0xFF: 3}
+GREYS = ("#000000", "#555555", "#aaaaaa", "#ffffff")
 
 
 # The geometry half of main.c expects <pebble.h>; give it the real graphics
@@ -98,6 +105,7 @@ STUB = r"""
 #include "graphics.h"
 #include "graphics_private.h"
 #include "pbl/util/trig.h"
+#include "replay.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -115,26 +123,7 @@ typedef struct Window Window;
 # each line corresponds to one line of the watchface's own draw routine.
 DRIVER = r"""
 static uint8_t s_framebuffer[DISP_COLS * DISP_ROWS];
-
-static void draw_minute_core(GContext *ctx, uint8_t pivot_index) {
-  if (pivot_index >= CENTERLINE_POINT_COUNT) {
-    return;
-  }
-  graphics_context_set_antialiased(ctx, false);
-  graphics_context_set_stroke_color(ctx, GColorWhite);
-  graphics_context_set_stroke_width(ctx, 1);
-
-  GPoint previous = vec2_to_gpoint(s_centerline[pivot_index]);
-  for (int index = pivot_index + 1; index < CENTERLINE_POINT_COUNT; ++index) {
-    const GPoint current = vec2_to_gpoint(s_centerline[index]);
-    if (!gpoint_equal(&current, &previous)) {
-      graphics_draw_line(ctx, previous, current);
-    }
-    previous = current;
-  }
-  graphics_draw_pixel(ctx, previous);
-  graphics_context_set_antialiased(ctx, true);
-}
+static GPoint s_core[CENTERLINE_POINT_COUNT];
 
 int main(int argc, char **argv) {
   FILE *frames = NULL;
@@ -151,7 +140,6 @@ int main(int argc, char **argv) {
   int hour, minute;
   while (scanf("%d %d", &hour, &minute) == 2) {
     graphics_context_init(&context, s_framebuffer);
-    GContext *ctx = &context;
 
     const CenterlineResult r = build_centerline(
       center, maximum_radius,
@@ -160,28 +148,14 @@ int main(int argc, char **argv) {
     update_cumulative_lengths();
     build_stroke_polygon(r.pivot_index, r.center_width_scale);
 
-    GPathInfo info = { .num_points = POLYGON_POINT_COUNT,
-                       .points = s_polygon_points };
-    GPath *path = gpath_create(&info);
-
-    /* pass 1 -- clear to black */
-    graphics_context_set_fill_color(ctx, GColorBlack);
-    graphics_fill_rect(ctx, &ctx->dest_bitmap.bounds);
-
-    /* pass 2 -- the filled stroke */
-    graphics_context_set_antialiased(ctx, true);
-    graphics_context_set_fill_color(ctx, GColorWhite);
-    gpath_draw_filled(ctx, path);
-
-    /* pass 3 -- the antialiased outline that puts the eroded pixel back */
-    graphics_context_set_stroke_color(ctx, GColorWhite);
-    graphics_context_set_stroke_width(ctx, 1);
-    gpath_draw_outline(ctx, path);
-
-    /* pass 4 -- the hard one-pixel minute core */
-    draw_minute_core(ctx, r.pivot_index);
-
-    gpath_destroy(path);
+    int core_count = 0;
+    if (r.pivot_index < CENTERLINE_POINT_COUNT) {
+      for (int i = r.pivot_index; i < CENTERLINE_POINT_COUNT; ++i) {
+        s_core[core_count++] = vec2_to_gpoint(s_centerline[i]);
+      }
+    }
+    replay_passes(&context, s_polygon_points, POLYGON_POINT_COUNT,
+                  s_core, core_count);
 
     /* Per-frame census, so a 720-minute sweep can be compared without moving
        33 MB of framebuffer through a pipe. */
@@ -202,6 +176,10 @@ int main(int argc, char **argv) {
            r.center_width_scale,
            level[0], level[1], level[2], level[3], other, hash);
 
+    for (int i = 0; i < POLYGON_POINT_COUNT; ++i) {
+      printf("P %d %d %d\n", i, s_polygon_points[i].x, s_polygon_points[i].y);
+    }
+
     if (frames) {
       fwrite(s_framebuffer, 1, sizeof(s_framebuffer), frames);
     }
@@ -210,6 +188,56 @@ int main(int argc, char **argv) {
   return 0;
 }
 """
+
+
+POLYGON_MAIN = os.path.join(HERE, "raster", "polygon_main.c")
+_polygon_binary = None
+
+
+def render_polygons(specs, board="emery"):
+    """Rasterize polygons built in Python, through the same four draw passes.
+
+    `specs` is a sequence of (polygon, core) point lists in framebuffer
+    coordinates, unrounded -- the driver applies main.c's own rounding. Returns
+    a frame dict per spec, shaped like gather's but without the geometry fields,
+    since the caller supplied the geometry.
+    """
+    global _polygon_binary
+    _, width, height = BOARDS[board]
+    key = (board,)
+    if _polygon_binary is None or _polygon_binary[0] != key:
+        directory = tempfile.mkdtemp(prefix="raster-poly-")
+        binary = os.path.join(directory, "polygon")
+        subprocess.run(["gcc", "-std=gnu11", "-O2", "-w", *cflags(board),
+                        "-o", binary, POLYGON_MAIN, *sources(), "-lm"],
+                       check=True)
+        _polygon_binary = (key, binary)
+    binary = _polygon_binary[1]
+
+    payload = []
+    for polygon, core in specs:
+        payload.append(f"frame {len(polygon)} {len(core)}")
+        payload.append(" ".join(f"{x:.6f} {y:.6f}" for x, y in polygon))
+        if core:
+            payload.append(" ".join(f"{x:.6f} {y:.6f}" for x, y in core))
+    blob = subprocess.run([binary], input=("\n".join(payload) + "\n").encode(),
+                          capture_output=True, check=True).stdout
+
+    stride = width * height
+    frames = []
+    for index in range(len(specs)):
+        buffer = blob[index * stride:(index + 1) * stride]
+        census = [0, 0, 0, 0]
+        other = 0
+        for byte in buffer:
+            level = LEVELS.get(byte)
+            if level is None:
+                other += 1
+            else:
+                census[level] += 1
+        frames.append(dict(width=width, height=height, buffer=buffer,
+                           census=tuple(census), other=other))
+    return frames
 
 
 def gather(times=None, overrides=None, patches=None, board="emery",
@@ -236,25 +264,33 @@ def gather(times=None, overrides=None, patches=None, board="emery",
         blob = open(frame_path, "rb").read() if frame_path else b""
 
     stride = width * height
+    # build_stroke_polygon prints its instrumented C lines while drawing, which
+    # happens before the frame's T summary can be known, so they are held and
+    # attached to the frame they belong to.
     frames = []
+    pending_centerline, pending_polygon = [], []
     for line in result.stdout.splitlines():
         f = line.split()
-        if f[0] != "T":
-            continue
-        index = len(frames)
-        frames.append(dict(
-            hour=int(f[1]), minute=int(f[2]), pivot=int(f[3]),
-            total=float(f[4]), scale=float(f[5]),
-            census=tuple(int(v) for v in f[6:10]), other=int(f[10]),
-            hash=int(f[11]), width=width, height=height,
-            buffer=blob[index * stride:(index + 1) * stride] if blob else b""))
+        if f[0] == "T":
+            index = len(frames)
+            current = dict(
+                hour=int(f[1]), minute=int(f[2]), pivot=int(f[3]),
+                total=float(f[4]), scale=float(f[5]),
+                census=tuple(int(v) for v in f[6:10]), other=int(f[10]),
+                hash=int(f[11]), width=width, height=height,
+                centerline=pending_centerline, polygon=pending_polygon,
+                buffer=blob[index * stride:(index + 1) * stride] if blob else b"")
+            frames.append(current)
+            pending_centerline, pending_polygon = [], []
+        elif f[0] == "C":
+            # build_stroke_polygon's own loop, instrumented by
+            # sheet_envelope.build: x, y, stroke width, polygon width
+            pending_centerline.append((float(f[2]), float(f[3]),
+                                       float(f[4]), float(f[5])))
+        elif f[0] == "P":
+            # these come after the T line, so they belong to the last frame
+            frames[-1]["polygon"].append((int(f[2]), int(f[3])))
     return frames
-
-
-# Coverage is quantized to four alpha steps, so a white-on-black render can only
-# ever contain these four bytes. check_raster.py asserts exactly that.
-LEVELS = {0xC0: 0, 0xD5: 1, 0xEA: 2, 0xFF: 3}
-GREYS = ("#000000", "#555555", "#aaaaaa", "#ffffff")
 
 
 def as_levels(frame):

@@ -8,6 +8,15 @@ compiled out of `main.c` through `sheet_envelope.build`'s override/patch
 mechanism, so what is drawn is the real code with one constant or one function
 body changed. `main.c` is never written to.
 
+Everything here is drawn by the **firmware's own rasterizer** (see raster.py and
+docs/pivot-design.md section 44), one rect per device pixel, in the four grey
+levels the hardware actually has. That matters for these four questions in
+particular: every one of them is a sub-pixel change to a one-to-three pixel
+stroke, and the filled path takes integer vertices only, so a change reaches the
+screen only by flipping a vertex's rounding. Each row therefore reports two
+deltas -- how far the geometry moved, and how many pixels changed as a result.
+The second is the one that decides anything.
+
   workshop-clearance.svg  does the branch-clearance squeeze do anything wanted?
   workshop-pressure.svg   is the pressure envelope's intent worth having?
   workshop-easing.svg     held body then taper, or one continuous modulation?
@@ -20,8 +29,11 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import raster
 import svgcanvas as S
-from sheet_envelope import OUT, gather, separation
+from sheet_envelope import OUT, separation
+
+gather = raster.gather
 
 CENTRE = (100.0, 114.0)
 
@@ -140,27 +152,44 @@ def dense_tangents(coarse_points, dense_points):
 
 # --- drawing --------------------------------------------------------------
 
-def panel(cv, ox, oy, w, h, frame, index, zoom, polygon=None, profile=False):
-    cv.rect(ox, oy, w, h, fill=S.PANEL, stroke="#242a31", stroke_width=0.8, rx=3)
-    scale = min(w, h) / 200.0 * zoom
-    pts = [(x, y) for x, y, _, _ in frame["centerline"]]
-    ink = [iw for _, _, iw, _ in frame["centerline"]]
+def panel(cv, ox, oy, w, h, frame, index, zoom, buffer=None, profile=False):
+    """One cell: a crop of the framebuffer, magnified by a whole number.
 
-    def T(p):
-        return (ox + w / 2 + (p[0] - CENTRE[0]) * scale,
-                oy + h / 2 + (p[1] - CENTRE[1]) * scale)
+    Magnification is forced to an integer so every pixel is a rect on exact
+    coordinates -- a fractional scale would put rect edges on fractional
+    coordinates and let the browser antialias them, which is the very thing
+    these sheets exist to stop doing.
+    """
+    cv.rect(ox, oy, w, h, fill="#000000", stroke="#242a31",
+            stroke_width=0.8, rx=3)
+    data = frame["buffer"] if buffer is None else buffer
+    width, height = frame["width"], frame["height"]
 
-    cv.push_clip(ox, oy, w, h, f"ws{index}")
-    poly = polygon if polygon is not None else frame["polygon"]
-    cv.polygon([T(p) for p in poly], fill=S.INK, stroke=S.INK,
-               stroke_width=scale, opacity=0.92)
-    cv.polyline([T(p) for p in pts[frame["pivot"]:]], stroke=S.INK,
-                stroke_width=scale, opacity=0.92)
-    c = T(CENTRE)
-    cv.line(c[0] - 4, c[1], c[0] + 4, c[1], stroke=S.DIM, stroke_width=0.6)
-    cv.line(c[0], c[1] - 4, c[0], c[1] + 4, stroke=S.DIM, stroke_width=0.6)
+    magnification = max(1, int(round(w * zoom / 200.0)))
+    crop_w = min(width, int(w // magnification))
+    crop_h = min(height, int(h // magnification))
+    x0 = min(max(0, int(round(CENTRE[0])) - crop_w // 2), width - crop_w)
+    y0 = min(max(0, int(round(CENTRE[1])) - crop_h // 2), height - crop_h)
+
+    rows = [[raster.LEVELS[b] for b in
+             data[y * width + x0:y * width + x0 + crop_w]]
+            for y in range(y0, y0 + crop_h)]
+
+    inset_x = ox + (w - crop_w * magnification) / 2.0
+    inset_y = oy + (h - crop_h * magnification) / 2.0
+    cv.pixels(inset_x, inset_y, rows, scale=magnification,
+              gap=0.3 if magnification >= 3 else 0.0)
+
+    # watch centre, as a pair of ticks outside the ink
+    cx = inset_x + (CENTRE[0] - x0) * magnification
+    cy = inset_y + (CENTRE[1] - y0) * magnification
+    cv.line(cx - 5, cy, cx - 2, cy, stroke=S.PIVOT, stroke_width=0.7)
+    cv.line(cx, cy - 5, cx, cy - 2, stroke=S.PIVOT, stroke_width=0.7)
+
     if profile:
         # the width profile itself, along the bottom of the cell
+        pts = [(x, y) for x, y, _, _ in frame["centerline"]]
+        ink = [iw for _, _, iw, _ in frame["centerline"]]
         top, base, span = oy + h - 40.0, oy + h - 8.0, w - 8.0
         peak = max(ink) or 1.0
         arc = [0.0]
@@ -173,7 +202,6 @@ def panel(cv, ox, oy, w, h, frame, index, zoom, polygon=None, profile=False):
         cv.polyline([(ox + 4 + span * a / total, base - (base - top) * v / peak)
                      for a, v in zip(arc, ink)], stroke="#4fc3f7",
                     stroke_width=1.2)
-    cv.pop()
 
 
 def sheet(path, title, notes, times, variants, zoom=1.0, size=150,
@@ -205,6 +233,15 @@ def sheet(path, title, notes, times, variants, zoom=1.0, size=150,
                 "MINUTE_STEM_SEGMENTS": "40"})
         polys = [(extra(f, d) if extra is not None else f["polygon"])
                  for f, d in zip(frames, dense or frames)]
+        # A variant built in Python still has to be drawn by the firmware
+        # rasterizer, or it would be judged on a different pipeline from the
+        # rows it is being compared with.
+        buffers = [None] * len(frames)
+        if extra is not None:
+            cores = [[(x, y) for x, y, _, _ in f["centerline"][f["pivot"]:]]
+                     for f in frames]
+            buffers = [r["buffer"] for r in
+                       raster.render_polygons(list(zip(polys, cores)))]
         if metric == "polygon":
             # for the tangent question the widths are identical by design and
             # the whole difference is in where the offset vertices land
@@ -218,18 +255,25 @@ def sheet(path, title, notes, times, variants, zoom=1.0, size=150,
             def worst_of(a, b):
                 return max(abs(x - y) for x, y in zip(a, b))
             unit_label = "width differs from row 1 by up to"
+        drawn = [f["buffer"] if b is None else b
+                 for f, b in zip(frames, buffers)]
         if baseline is None:
-            baseline = measured
+            baseline, baseline_pixels = measured, drawn
             cv.text(24, y + 32, "(baseline for the deltas below)", size=8,
                     fill=S.DIM)
         else:
             worst = max(worst_of(a, b) for a, b in zip(measured, baseline))
+            moved = sum(sum(1 for p, q in zip(a, b) if p != q)
+                        for a, b in zip(drawn, baseline_pixels))
             cv.text(24, y + 32, f"{unit_label} {worst:.3f} px",
                     size=8, fill=S.DIM if worst < 0.5 else "#f4d35e")
+            cv.text(24, y + 44,
+                    f"pixels changed across the row: {moved}", size=8,
+                    fill=S.DIM if moved == 0 else "#f4d35e")
         for col, frame in enumerate(frames):
             ox = label_width + col * (size + gap)
-            poly = polys[col] if extra is not None else None
-            panel(cv, ox, y, size, size, frame, index, zoom, poly, profile)
+            panel(cv, ox, y, size, size, frame, index, zoom,
+                  buffers[col], profile)
             peak = max(iw for _, _, iw, _ in frame["centerline"])
             waist = frame["centerline"][frame["pivot"]][2]
             cv.text(ox + 4, y + size - 4,
