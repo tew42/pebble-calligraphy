@@ -98,9 +98,9 @@ int main(void) {
     printf("T %d %d %u %.6f %.6f\n",
            hour, minute, r.pivot_index,
            s_cumulative_length[CENTERLINE_POINT_COUNT - 1],
-           r.center_width_scale);
+           r.waist_opening);
 
-    build_stroke_polygon(r.pivot_index, r.center_width_scale);
+    build_stroke_polygon(r.pivot_index, r.waist_opening);
     for (int i = 0; i < POLYGON_POINT_COUNT; ++i) {
       printf("P %d %d %d\n", i, s_polygon_points[i].x, s_polygon_points[i].y);
     }
@@ -294,7 +294,7 @@ def sheet(path, zoom, title, size=176):
                 "non-adjacent part of the stroke.  Yellow = a sample where half "
                 "the width exceeds the radius of", size=10, fill=S.DIM)
     canvas.text(24, 86, "curvature, so the inner offset inverts and the polygon "
-                "is no longer simple.  cw = center_width_scale, the term meant "
+                "is no longer simple.  cw = waist_opening, the term meant "
                 "to keep the branches apart.", size=10, fill=S.DIM)
     canvas.text(24, 104, "Measured over all 720 positions: collisions out to "
                 "delta 18.5, cusps out to delta 24.5, and cw is saturated at 1 "

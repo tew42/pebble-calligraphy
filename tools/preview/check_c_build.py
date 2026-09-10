@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
           );
         build_stroke_polygon(
           result.pivot_index,
-          result.center_width_scale
+          result.waist_opening
         );
         checksum +=
           s_polygon_points[10].x +

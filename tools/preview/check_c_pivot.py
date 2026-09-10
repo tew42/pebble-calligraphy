@@ -10,11 +10,18 @@ compares the result against `geometry.py`'s D1 rule at every hand position in
 every stem configuration.  If the two ever disagree, either the C was edited
 without the model or the model was edited without the C.
 
+It checks both things the function returns: the pivot point, and the waist
+opening -- the chord between the two stem ends measured at the shorter stem's
+radius, over MIDDLE_WIDTH, clamped.  That lives here rather than in
+build_centerline because every term it needs is already in hand for the pivot
+offset, and the check is what stops the two from drifting apart.
+
 Needs a C compiler, which nothing else here does, so it is a separate script
 rather than part of test_harness.py.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import subprocess
@@ -23,6 +30,9 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import geometry as G
+
+#: read out of main.c by build(), and needed by the expectation below
+MIDDLE_WIDTH = None
 
 MAIN_C = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                       "..", "..", "src", "c", "main.c")
@@ -40,19 +50,23 @@ WANTED = (
     "static Vec2 normalize_vec2(",
     "static float distance_between(",
     "static Vec2 direction_between(",
-    "static Vec2 calculate_pivot_point(",
+    "static PivotResult calculate_pivot_point(",
 )
 
 #: float32 against float64, over a 100 px face.
 TOLERANCE_PX = 1e-3
+
+#: The waist is a ratio, and the half-angle it needs is a cancellation, so
+#: float32 loses more relative precision here than on the pivot itself.
+TOLERANCE_WAIST = 5e-4
 
 DRIVER = """
 int main(void) {
   float cx, cy, ax, ay, bx, by;
   while (scanf("%f %f %f %f %f %f", &cx, &cy, &ax, &ay, &bx, &by) == 6) {
     Vec2 c = { cx, cy }, a = { ax, ay }, b = { bx, by };
-    Vec2 p = calculate_pivot_point(c, a, b);
-    printf("%.9f %.9f\\n", p.x, p.y);
+    PivotResult r = calculate_pivot_point(c, a, b);
+    printf("%.9f %.9f %.9f\\n", r.point.x, r.point.y, r.waist_opening);
   }
   return 0;
 }
@@ -77,12 +91,15 @@ def extract(source: str, signature: str) -> str:
 def build(directory: str) -> str:
     source = open(MAIN_C).read()
     epsilon = re.search(r"#define VECTOR_EPSILON (\S+)", source).group(1)
+    middle = re.search(r"#define MIDDLE_WIDTH (\S+)", source).group(1)
     pieces = [
         "#include <stdio.h>",
         "#include <stdint.h>",
         "#include <stdbool.h>",
         f"#define VECTOR_EPSILON {epsilon}",
+        f"#define MIDDLE_WIDTH {middle}",
         "typedef struct {\n  float x;\n  float y;\n} Vec2;",
+        "typedef struct {\n  Vec2 point;\n  float waist_opening;\n} PivotResult;",
     ]
     pieces += [extract(source, signature) for signature in WANTED]
     pieces.append(DRIVER)
@@ -96,6 +113,9 @@ def build(directory: str) -> str:
 
 
 def main() -> int:
+    global MIDDLE_WIDTH
+    MIDDLE_WIDTH = float(re.search(r"#define MIDDLE_WIDTH (\S+)",
+                                   open(MAIN_C).read()).group(1).rstrip("f"))
     rule = G.CANDIDATES_BY_KEY["d1-arc-sin"].rule
     face = G.Face()
     cases, expected = [], []
@@ -106,7 +126,15 @@ def main() -> int:
             a, b = cl.hour_connector, cl.minute_connector
             cases.append(f"{centre[0]:.9f} {centre[1]:.9f} {a[0]:.9f} "
                          f"{a[1]:.9f} {b[0]:.9f} {b[1]:.9f}")
-            expected.append((cl.pivot, stems.name, hour, minute))
+            # The waist, computed independently of the C: the chord between
+            # the two stem ends taken at the shorter stem's radius, over
+            # MIDDLE_WIDTH, clamped to the unit interval.
+            rh = G.norm(G.sub(a, centre))
+            rm = G.norm(G.sub(b, centre))
+            half = math.radians(G.separation_degrees(hour, minute)) / 2.0
+            chord = 2.0 * min(rh, rm) * math.sin(half)
+            waist = min(1.0, max(0.0, chord / MIDDLE_WIDTH))
+            expected.append((cl.pivot, waist, stems.name, hour, minute))
 
     with tempfile.TemporaryDirectory() as directory:
         binary = build(directory)
@@ -121,27 +149,36 @@ def main() -> int:
         return 1
 
     worst = (0.0, None)
-    for (point, name, hour, minute), c_point in zip(expected, got):
-        error = G.norm(G.sub(c_point, point))
+    worst_waist = (0.0, None)
+    for (point, waist, name, hour, minute), row in zip(expected, got):
+        error = G.norm(G.sub(row[:2], point))
         if error > worst[0]:
             worst = (error, (name, hour, minute))
+        waist_error = abs(row[2] - waist)
+        if waist_error > worst_waist[0]:
+            worst_waist = (waist_error, (name, hour, minute))
 
     overlap_worst = 0.0
-    for (point, name, hour, minute), c_point in zip(expected, got):
+    for (point, waist, name, hour, minute), row in zip(expected, got):
         if G.separation_degrees(hour, minute) < 1e-9:
             overlap_worst = max(overlap_worst,
-                                G.norm(G.sub(c_point, face.center)))
+                                G.norm(G.sub(row[:2], face.center)))
 
     print(f"checked {len(got)} positions across {len(G.STEM_CONFIGS)} stem "
           f"configurations")
     print(f"  worst disagreement with the model: {worst[0]:.2e} px at {worst[1]}")
     print(f"  pivot at exact overlap, worst over configs: {overlap_worst:.2e} px "
           "from the centre")
+    print(f"  worst waist-opening disagreement: {worst_waist[0]:.2e} at "
+          f"{worst_waist[1]}")
     if worst[0] > TOLERANCE_PX:
         print(f"FAIL: above the {TOLERANCE_PX} px tolerance")
         return 1
     if overlap_worst != 0.0:
         print("FAIL: the pivot must be exactly on the centre at overlap")
+        return 1
+    if worst_waist[0] > TOLERANCE_WAIST:
+        print(f"FAIL: waist opening above the {TOLERANCE_WAIST} tolerance")
         return 1
     print("ok")
     return 0

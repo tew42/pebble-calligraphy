@@ -67,6 +67,11 @@
 #define MIDDLE_WIDTH 3.0f
 #define MINUTE_TIP_WIDTH 1.0f
 
+/* The narrowest the stroke is ever drawn. Not a design parameter: one pixel is
+   the floor the display imposes. It coincides with MINUTE_TIP_WIDTH only by
+   arithmetic accident, so it is named separately. */
+#define MINIMUM_STROKE_WIDTH 1.0f
+
 #define HOUR_SWELL_POSITION 0.05f
 #define PRESSURE_VARIATION 0.20f
 
@@ -96,8 +101,13 @@ typedef struct {
 } ClockAngles;
 
 typedef struct {
+  Vec2 point;
+  float waist_opening;
+} PivotResult;
+
+typedef struct {
   uint8_t pivot_index;
-  float center_width_scale;
+  float waist_opening;
 } CenterlineResult;
 
 typedef struct {
@@ -438,7 +448,7 @@ static uint16_t get_current_time_key(void) {
  * behind; the previous rule was anchored to the face radius, so the pivot sat
  * 12.6 px from the centre at quadrature no matter what the stems were doing.
  */
-static Vec2 calculate_pivot_point(
+static PivotResult calculate_pivot_point(
     Vec2 center,
     Vec2 hour_connector_point,
     Vec2 minute_connector_point
@@ -464,9 +474,12 @@ static Vec2 calculate_pivot_point(
   const float direction_sum_length =
     length_vec2(direction_sum);
 
-  /* Hands exactly opposed: there is no bisector, and no offset is wanted. */
+  /*
+   * Hands exactly opposed: there is no bisector, and no offset is wanted.  The
+   * stems are also as far apart as they ever get, so the waist is wide open.
+   */
   if (direction_sum_length < VECTOR_EPSILON) {
-    return center;
+    return (PivotResult) { center, 1.0f };
   }
 
   const float radial_dot =
@@ -522,13 +535,38 @@ static Vec2 calculate_pivot_point(
     sine_half_angle /
     (1.0f + sine_half_angle);
 
-  return add_vec2(
-    center,
-    multiply_vec2(
-      direction_sum,
-      pivot_offset / direction_sum_length
+  /*
+   * How far apart the two stems end, measured across rather than along: the
+   * chord subtended at the shorter stem's radius.  It goes to zero as the hands
+   * close, whatever the two stem lengths are, which is what the waist wants --
+   * the straight-line distance between the stem ends would not, since they sit
+   * at different radii and stay MINUTE_STEM - HOUR_STEM apart at overlap.
+   *
+   * Computed here rather than in build_centerline because every term it needs
+   * is already in hand for the pivot offset above.  Deriving it there a second
+   * time cost a dot product and three square roots -- nine divisions, since
+   * square_root_float is three Newton iterations -- on every rebuild.
+   */
+  const float stem_separation =
+    2.0f *
+    smaller_inner_radius *
+    sine_half_angle;
+
+  return (PivotResult) {
+    add_vec2(
+      center,
+      multiply_vec2(
+        direction_sum,
+        pivot_offset / direction_sum_length
+      )
+    ),
+    clamp_float(
+      stem_separation /
+      MIDDLE_WIDTH,
+      0.0f,
+      1.0f
     )
-  );
+  };
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1076,7 +1114,7 @@ static CenterlineResult build_centerline(
     .pivot_index =
       (uint8_t)(CENTERLINE_POINT_COUNT / 2),
 
-    .center_width_scale = 1.0f
+    .waist_opening = 1.0f
   };
 
   const float hour_length =
@@ -1143,12 +1181,15 @@ static CenterlineResult build_centerline(
    * The pivot is placed from where the stems end, not from where the hands
    * end, so the connector points have to be in hand before it is placed.
    */
-  const Vec2 guide_point =
+  const PivotResult pivot =
     calculate_pivot_point(
       center,
       hour_connector_point,
       minute_connector_point
     );
+
+  const Vec2 guide_point =
+    pivot.point;
 
   const int connector_first_index =
     HOUR_STEM_SEGMENTS;
@@ -1263,55 +1304,8 @@ static CenterlineResult build_centerline(
     safe_minute_span
   );
 
-  const float radial_dot =
-    clamp_float(
-      dot_vec2(
-        hour_radial_out,
-        minute_radial_out
-      ),
-      -1.0f,
-      1.0f
-    );
-
-  const float sine_half_angle =
-    square_root_float(
-      clamp_float(
-        0.5f *
-        (1.0f - radial_dot),
-        0.0f,
-        1.0f
-      )
-    );
-
-  const float hour_inner_radius =
-    distance_between(
-      center,
-      hour_connector_point
-    );
-
-  const float minute_inner_radius =
-    distance_between(
-      center,
-      minute_connector_point
-    );
-
-  const float smaller_inner_radius =
-    hour_inner_radius < minute_inner_radius
-      ? hour_inner_radius
-      : minute_inner_radius;
-
-  const float branch_clearance =
-    2.0f *
-    smaller_inner_radius *
-    sine_half_angle;
-
-  result.center_width_scale =
-    clamp_float(
-      branch_clearance /
-      MIDDLE_WIDTH,
-      0.0f,
-      1.0f
-    );
+  result.waist_opening =
+    pivot.waist_opening;
 
   return result;
 }
@@ -1507,7 +1501,7 @@ static Vec2 calculate_centerline_tangent(int index) {
 
 static void build_stroke_polygon(
     uint8_t pivot_index,
-    float center_width_scale
+    float waist_opening
 ) {
   update_cumulative_lengths();
 
@@ -1529,9 +1523,9 @@ static void build_stroke_polygon(
 
   const float effective_middle_width =
     interpolate_float(
-      1.0f,
+      MINIMUM_STROKE_WIDTH,
       MIDDLE_WIDTH,
-      smooth_unit(center_width_scale)
+      smooth_unit(waist_opening)
     );
 
   for (
@@ -1678,7 +1672,7 @@ static bool rebuild_geometry(
 
   build_stroke_polygon(
     centerline_result.pivot_index,
-    centerline_result.center_width_scale
+    centerline_result.waist_opening
   );
 
   s_geometry_state.bounds =

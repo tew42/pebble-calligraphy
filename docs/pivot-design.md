@@ -1681,11 +1681,11 @@ this is to be workshopped further, it is the breakpoint that is worth moving.
 | variant | outline moves by | pixels changed |
 | --- | --- | --- |
 | shipped bisector, shipped widths | baseline | -- |
-| near-exact tangent, shipped widths | 0.562 px | **4** |
+| near-exact tangent, shipped widths | 0.562 px | **9** |
 | shipped bisector, 3x widths | baseline | -- |
 | near-exact tangent, 3x widths | 1.177 px | **35** |
 
-Four pixels across five positions at shipped widths. Even at triple widths --
+Nine pixels across five positions at shipped widths. Even at triple widths --
 past anything the design would do -- 35 pixels across five positions, and the
 two rows are indistinguishable. The finite-difference bisector is fine; using
 the Hermite derivative the centerline already has would be tidier but buys
@@ -1694,3 +1694,88 @@ nothing.
 A harness note that makes this comparison trustworthy: the Python reconstruction
 of the *shipped* bisector is pixel-identical to the C on all five positions, so
 the difference in row 2 is the variant and not the reconstruction.
+
+## 46. Renaming the clearance, and the elegant route that was wrong
+
+`branch_clearance` was a misnomer twice over: nothing else in the code calls
+these arms branches, and it is not a clearance -- it is a separation. It is now
+`stem_separation`, and `center_width_scale` (the ratio it feeds) is now
+`waist_opening`, which is what it actually controls.
+
+### The restatement that failed
+
+The tempting simplification was to reuse the pivot depth, since D1 places the
+pivot at `arc_apex_ceiling * sin(d/2)` and `arc_apex_ceiling -> min(r)` as
+`d -> 0`, making `2s` and the chord the same quantity to first order:
+
+```c
+const float fold_depth = distance_between(center, guide_point);
+waist_opening = clamp_float(2.0f * fold_depth / MIDDLE_WIDTH, 0.0f, 1.0f);
+```
+
+Over the band where the term acts this agrees with the shipped formula to
+**0.043 px**, and on that basis it looked like a pure restatement -- one
+distance call replacing a dot product, a square root, two more distance calls
+and a minimum.
+
+It is not a restatement. It is **wrong at opposition**, and the framebuffer
+sweep found it: **33 of 720 minutes change**, every one of them with the hands
+near opposite. The reason is that `2s = 2 min(r) cos(d/2) sin(d/2) / (1 + sin(d/2))`
+is not monotonic. It rises, then falls back to zero as `d -> 180`, because
+`cos(d/2) -> 0`. At exactly 06:00 the two radials cancel, the pivot sits on the
+centre by construction, `fold_depth` is 0, and the waist collapses to 1 px at
+precisely the position where the hands are furthest apart and it should be at
+its full 3 px. Ink drops from 451 to 313 pixels.
+
+The lesson is narrow and worth keeping: agreement was verified over `d` = 0 to 6
+degrees, where the term acts, and *not* at the far end, where the shipped
+formula is saturated and the replacement falls off a cliff. Saturated is not the
+same as irrelevant.
+
+Also rejected, and for a different reason: the *true* straight-line distance
+between the two stem ends, `distance_between(hour_connector_point,
+minute_connector_point)`, which is a single call and needs no half-angle at all.
+It fails at the other end. The stems end at different radii, so at overlap the
+two points are still `MINUTE_STEM - HOUR_STEM` apart -- 9 px as shipped -- and
+the waist would never close. The shipped formula measures separation *across*
+the fold rather than between the endpoints, and that is the right quantity.
+
+### What was actually redundant
+
+The formula was right; its *placement* was not. `calculate_pivot_point` already
+computes `radial_dot`, `sine_half_angle`, both inner radii and their minimum to
+place the pivot, and then throws them away -- and `build_centerline` recomputed
+all five to derive the waist. So the function now returns both:
+
+```c
+typedef struct {
+  Vec2 point;
+  float waist_opening;
+} PivotResult;
+```
+
+Forty lines of duplicated derivation go, and with them **3 square roots and 9
+divisions per rebuild** (205 -> 202 and 615 -> 606; `square_root_float` is three
+Newton iterations, so each root carries three divisions). Rebuild time falls
+from 2.2 to 1.7 microseconds.
+
+Verified: the framebuffer is **identical on all 720 minutes**, and
+`check_c_build.py`'s polygon checksum is unchanged at 8475950. The
+`waist_opening` float itself differs on 9 of the 720, by at most 2.05e-4 --
+`radial_dot` is now taken from the unit radials to the connector points rather
+than to the hand tips, which are the same direction but not the same rounding,
+and `0.5 (1 - dot)` is a cancellation that amplifies the difference. It does not
+reach a pixel. So this is pixel-identical, not bit-identical, and the
+distinction is recorded rather than glossed.
+
+`check_c_pivot.py` now checks both returns against an independently computed
+expectation, worst waist disagreement 3.27e-4 over 4320 positions in 6 stem
+configurations.
+
+### One literal named
+
+`interpolate_float(1.0f, MIDDLE_WIDTH, ...)` floors the waist at one pixel. That
+`1.0f` is now `MINIMUM_STROKE_WIDTH`: not a design parameter, just the floor the
+display imposes, and it coincides with `MINUTE_TIP_WIDTH` only by arithmetic
+accident. Naming it separately stops a future edit to the minute tip from
+silently changing the waist floor.

@@ -54,14 +54,14 @@ EASINGS = {
 #: The waist term, as shipped, and the two ways of changing it.
 WAIST_SHIPPED = """  const float effective_middle_width =
     interpolate_float(
-      1.0f,
+      MINIMUM_STROKE_WIDTH,
       MIDDLE_WIDTH,
-      smooth_unit(center_width_scale)
+      smooth_unit(waist_opening)
     );"""
 WAIST_DELETED = """  const float effective_middle_width =
     MIDDLE_WIDTH;"""
 
-CLEARANCE_DIVISOR = "      branch_clearance /\n      MIDDLE_WIDTH,"
+CLEARANCE_DIVISOR = "      stem_separation /\n      MIDDLE_WIDTH,"
 
 #: The contraction runs from the swell breakpoint all the way to the pivot.
 #: Holding the body first, by starting the contraction later, is a different
@@ -304,7 +304,7 @@ def clearance_sheet():
         [("as shipped", None, None, None),
          ("deleted", None, [(WAIST_SHIPPED, WAIST_DELETED)], None),
          ("divisor retuned, acts to d~26", None,
-          [(CLEARANCE_DIVISOR, "      branch_clearance /\n      20.0f,")],
+          [(CLEARANCE_DIVISOR, "      stem_separation /\n      20.0f,")],
           None)],
         zoom=6.0, size=176)
 
