@@ -148,9 +148,9 @@ def build(directory, overrides=None, patches=None, stub=None, driver=None,
         raise SystemExit("could not find the half_width anchor to instrument")
     body = body.replace(anchor, anchor + """
 
-    printf("C %d %.4f %.4f %.4f %.4f\\n", index,
+    printf("C %d %.9g %.9g %.9g %.9g %.9g\\n", index,
            s_centerline[index].x, s_centerline[index].y,
-           stroke_width, polygon_width);""")
+           stroke_width, polygon_width, s_cumulative_length[index]);""")
 
     for name, value in (overrides or {}).items():
         pattern = re.compile(r"^#define[ \t]+" + re.escape(name) + r"[ \t]+.*$",

@@ -188,8 +188,8 @@ def panel(cv, ox, oy, w, h, frame, index, zoom, buffer=None, profile=False):
 
     if profile:
         # the width profile itself, along the bottom of the cell
-        pts = [(x, y) for x, y, _, _ in frame["centerline"]]
-        ink = [iw for _, _, iw, _ in frame["centerline"]]
+        pts = [(x, y) for x, y, *_ in frame["centerline"]]
+        ink = [row[2] for row in frame["centerline"]]
         top, base, span = oy + h - 40.0, oy + h - 8.0, w - 8.0
         peak = max(ink) or 1.0
         arc = [0.0]
@@ -238,7 +238,7 @@ def sheet(path, title, notes, times, variants, zoom=1.0, size=150,
         # rows it is being compared with.
         buffers = [None] * len(frames)
         if extra is not None:
-            cores = [[(x, y) for x, y, _, _ in f["centerline"][f["pivot"]:]]
+            cores = [[(x, y) for x, y, *_ in f["centerline"][f["pivot"]:]]
                      for f in frames]
             buffers = [r["buffer"] for r in
                        raster.render_polygons(list(zip(polys, cores)))]
@@ -251,7 +251,7 @@ def sheet(path, title, notes, times, variants, zoom=1.0, size=150,
                            for p, q in zip(a, b))
             unit_label = "outline moves by up to"
         else:
-            measured = [[w for _, _, w, _ in f["centerline"]] for f in frames]
+            measured = [[row[2] for row in f["centerline"]] for f in frames]
             def worst_of(a, b):
                 return max(abs(x - y) for x, y in zip(a, b))
             unit_label = "width differs from row 1 by up to"
@@ -274,7 +274,7 @@ def sheet(path, title, notes, times, variants, zoom=1.0, size=150,
             ox = label_width + col * (size + gap)
             panel(cv, ox, y, size, size, frame, index, zoom,
                   buffers[col], profile)
-            peak = max(iw for _, _, iw, _ in frame["centerline"])
+            peak = max(row[2] for row in frame["centerline"])
             waist = frame["centerline"][frame["pivot"]][2]
             cv.text(ox + 4, y + size - 4,
                     f"peak {peak:.2f}  waist {waist:.2f}", size=7, fill=S.DIM)
@@ -360,14 +360,14 @@ def easing_sheet():
 
 def tangent_sheet():
     def exact(frame, dense_frame):
-        pts = [(x, y) for x, y, _, _ in frame["centerline"]]
-        ink = [w for _, _, _, w in frame["centerline"]]
-        dpts = [(x, y) for x, y, _, _ in dense_frame["centerline"]]
+        pts = [(x, y) for x, y, *_ in frame["centerline"]]
+        ink = [row[3] for row in frame["centerline"]]
+        dpts = [(x, y) for x, y, *_ in dense_frame["centerline"]]
         return polygon_from(pts, ink, dense_tangents(pts, dpts))
 
     def shipped(frame, _dense):
-        pts = [(x, y) for x, y, _, _ in frame["centerline"]]
-        ink = [w for _, _, _, w in frame["centerline"]]
+        pts = [(x, y) for x, y, *_ in frame["centerline"]]
+        ink = [row[3] for row in frame["centerline"]]
         return polygon_from(pts, ink, bisector_tangents(pts))
 
     triple = {"HOUR_TIP_WIDTH": "9.0f", "HOUR_BODY_WIDTH": "18.0f",

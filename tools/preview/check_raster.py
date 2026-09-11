@@ -250,11 +250,11 @@ t_times = ((12, 1), (12, 2), (12, 3), (12, 5), (12, 8))
 built = raster.gather(times=t_times)
 specs = []
 for f in built:
-    points = [(x, y) for x, y, _, _ in f["centerline"]]
-    widths = [w for _, _, _, w in f["centerline"]]
+    points = [(x, y) for x, y, *_ in f["centerline"]]
+    widths = [row[3] for row in f["centerline"]]
     specs.append((workshop.polygon_from(points, widths,
                                         workshop.bisector_tangents(points)),
-                  [(x, y) for x, y, _, _ in f["centerline"][f["pivot"]:]]))
+                  [(x, y) for x, y, *_ in f["centerline"][f["pivot"]:]]))
 replayed = raster.render_polygons(specs)
 check("frames returned by render_polygons", len(replayed), len(t_times))
 check("of them non-empty", sum(1 for r in replayed if sum(r["census"][1:])),

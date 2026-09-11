@@ -285,8 +285,10 @@ def gather(times=None, overrides=None, patches=None, board="emery",
         elif f[0] == "C":
             # build_stroke_polygon's own loop, instrumented by
             # sheet_envelope.build: x, y, stroke width, polygon width
+            # x, y, stroke width, polygon width, cumulative arc length
             pending_centerline.append((float(f[2]), float(f[3]),
-                                       float(f[4]), float(f[5])))
+                                       float(f[4]), float(f[5]),
+                                       float(f[6])))
         elif f[0] == "P":
             # these come after the T line, so they belong to the last frame
             frames[-1]["polygon"].append((int(f[2]), int(f[3])))
