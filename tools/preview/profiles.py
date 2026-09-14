@@ -333,6 +333,31 @@ def curvature_capped(ctx, dense=None):
     return [max(floor, min(w, 2.0 * r)) for w, r in zip(widths, radii)]
 
 
+def curvature_spread(spread_px):
+    """`w <= 2R`, but with R taken as the sharpest within +/-`spread_px` of arc.
+
+    The unspread rule finds the right place and then thins exactly one sample
+    out of 49, which is why it renders like no-thinning at all at overlap: a
+    single-sample notch is not a visible narrowing. Spreading the cap over a
+    neighbourhood is what turns a correct diagnosis into a visible treatment.
+    """
+    def profile(ctx, dense=None):
+        widths = no_thinning(ctx)
+        if dense is None:
+            return widths
+        radii = radius_at_samples(ctx, dense)
+        floor = K["MINIMUM_STROKE_WIDTH"]
+        out = []
+        for i, w in enumerate(widths):
+            nearby = [radii[j] for j in range(len(radii))
+                      if abs(ctx.arc[j] - ctx.arc[i]) <= spread_px]
+            cap = 2.0 * min(nearby) if nearby else float("inf")
+            out.append(max(floor, min(w, cap)))
+        return out
+    profile.__name__ = f"curvature_spread{spread_px:g}"
+    return profile
+
+
 TRACK1 = (
     ("shipped", lambda ctx, dense=None: shipped(ctx)),
     ("no thinning at all", no_thinning),
@@ -340,4 +365,5 @@ TRACK1 = (
     ("band x0.5 (thins only very close)", thinning_band(0.5)),
     ("floor 2 px instead of 1", thinning_floor(2.0)),
     ("curvature rule, w <= 2R", curvature_capped),
+    ("curvature, spread +/-4 px", curvature_spread(4.0)),
 )
