@@ -8,7 +8,7 @@
 # importable; this is the only part that needs external binaries.
 set -euo pipefail
 
-CHROME="${CHROME:-/opt/pw-browsers/chromium-1194/chrome-linux/chrome}"
+CHROME="${CHROME:-$(ls -d /opt/pw-browsers/chromium-[0-9]*/chrome-linux*/chrome 2>/dev/null | sort -V | tail -1)}"
 # ffmpeg is not used: the bundled build has no GIF encoder (see gifwriter.py).
 SCALE="${SCALE:-1}"
 

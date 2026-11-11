@@ -114,11 +114,14 @@ def smooth_unit(value):
 
 # --- the control ------------------------------------------------------------
 
-def shipped(ctx):
+def shipped(ctx, pressure=None):
     """`calculate_stroke_width` and the pressure bias, transcribed.
 
     Returns stroke width per sample, before OUTLINE_WIDTH_COMPENSATION.
+    `pressure` overrides PRESSURE_VARIATION; 0.0 gives the bare two-segment
+    profile with the multiplier taken off.
     """
+    variation = K["PRESSURE_VARIATION"] if pressure is None else pressure
     widths = []
     pivot_position = ctx.pivot_position
     middle = ctx.middle_width
@@ -149,7 +152,7 @@ def shipped(ctx):
                 width = lerp(middle, K["MINUTE_TIP_WIDTH"], smooth_unit(minute))
 
         envelope = 4.0 * position * (1.0 - position)
-        width *= 1.0 + K["PRESSURE_VARIATION"] * envelope * (pivot_position - position)
+        width *= 1.0 + variation * envelope * (pivot_position - position)
         widths.append(width)
     return widths
 
@@ -188,20 +191,6 @@ def check(times=None, verbose=True):
               + (f" at {worst_at[0] % 12 or 12:02d}:{worst_at[1]:02d}"
                  if worst_at else ""))
     return worst
-
-
-def main() -> int:
-    worst = check()
-    # float32 in the C against float64 here, over widths of order 6 px
-    if worst > 1e-4:
-        print("FAIL: the reimplementation does not match the C")
-        return 1
-    print("ok")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
 
 
 # --- curvature, for the kink track ------------------------------------------
@@ -269,12 +258,12 @@ def radius_at_samples(ctx, dense_frame):
 
 # --- track 1: what to do at the kink ----------------------------------------
 
-def _base(ctx, waist_opening):
+def _base(ctx, waist_opening, pressure=None):
     """The shipped profile with the waist term forced to a given opening."""
     saved = ctx.waist_opening
     ctx.waist_opening = waist_opening
     try:
-        return shipped(ctx)
+        return shipped(ctx, pressure)
     finally:
         ctx.waist_opening = saved
 
@@ -367,3 +356,247 @@ TRACK1 = (
     ("curvature rule, w <= 2R", curvature_capped),
     ("curvature, spread +/-4 px", curvature_spread(4.0)),
 )
+
+
+# --- tracks 2 and 3: the profile itself, on a no-thinning baseline ----------
+#
+# Thinning exists to keep the pivot from reading as a broad blob, which makes it
+# a statement about w at the pivot -- the thing track 2 varies -- rather than a
+# mechanism of its own. So both tracks run with the waist held open, and the
+# near-overlap columns are kept on every sheet to show whether the pivot value a
+# profile lands on needs help once the hands close.
+#
+# The domain is from the end of the hour swell to the minute point. The swell is
+# the defined hour part and is reproduced exactly as shipped in every variant.
+
+PEAK = K["HOUR_BODY_WIDTH"]
+TIP = K["MINUTE_TIP_WIDTH"]
+
+
+def domain(ctx):
+    """(arc where the swell ends, arc span of the domain, pivot's place in it)."""
+    start = K["HOUR_SWELL_POSITION"] * ctx.arc[ctx.pivot]
+    span = ctx.total - start
+    return start, span, (ctx.arc[ctx.pivot] - start) / span
+
+
+def from_shape(shape, name=None):
+    """Lift w(u, u_pivot, span_px) on the domain to a width per sample.
+
+    u runs 0 at the swell's peak to 1 at the minute point; u_pivot is where the
+    pivot falls in that parameter, which is NOT one half and moves with the time.
+    """
+    def profile(ctx, dense=None):
+        start, span, u_pivot = domain(ctx)
+        widths = []
+        for a in ctx.arc:
+            if a <= start:
+                t = a / start if start > K["VECTOR_EPSILON"] else 1.0
+                widths.append(lerp(K["HOUR_TIP_WIDTH"], PEAK, smooth_unit(t)))
+            else:
+                widths.append(shape((a - start) / span, u_pivot, span))
+        return widths
+    if name:
+        profile.__name__ = name
+    return profile
+
+
+def two_smoothstep(mid, at=None):
+    """Peak -> `mid` -> point in two smoothsteps: the shipped shape.
+
+    `at` places the control value at a fixed fraction of the domain instead of
+    at the pivot. With at=None and mid=MIDDLE_WIDTH this is exactly the shipped
+    profile with the waist open and the pressure multiplier off.
+    """
+    def shape(u, u_pivot, span):
+        c = u_pivot if at is None else at
+        if u <= c:
+            return lerp(PEAK, mid, smooth_unit(u / c))
+        return lerp(mid, TIP, smooth_unit((u - c) / (1.0 - c)))
+    return shape
+
+
+def single_smoothstep(u, u_pivot, span):
+    """Peak -> point in one smoothstep. No control value: MIDDLE_WIDTH's null."""
+    return lerp(PEAK, TIP, smooth_unit(u))
+
+
+def hold_then_reduce(hold_px):
+    """Full width for `hold_px` of arc, then one smoothstep down to the point."""
+    def shape(u, u_pivot, span):
+        h = min(hold_px / span, 0.95)
+        if u <= h:
+            return PEAK
+        return lerp(PEAK, TIP, smooth_unit((u - h) / (1.0 - h)))
+    return shape
+
+
+def power(p):
+    """w = tip + (peak - tip)(1 - u)^p. p = 1 is a straight taper."""
+    def shape(u, u_pivot, span):
+        return TIP + (PEAK - TIP) * (1.0 - u) ** p
+    return shape
+
+
+def circular(u, u_pivot, span):
+    """Quarter-ellipse: holds width, then closes round at the point."""
+    return TIP + (PEAK - TIP) * math.sqrt(max(0.0, 1.0 - u * u))
+
+
+BASELINE_SHAPE = two_smoothstep(K["MIDDLE_WIDTH"])
+baseline = from_shape(BASELINE_SHAPE, "baseline")
+
+
+def reference(ctx, dense=None):
+    """The watchface as drawn today: waist term and pressure both on."""
+    return shipped(ctx)
+
+
+def raised_cosine(distance, half_width):
+    if abs(distance) >= half_width:
+        return 0.0
+    return 0.5 * (1.0 + math.cos(math.pi * distance / half_width))
+
+
+def with_bumps(*bumps):
+    """The baseline plus raised-cosine bumps placed in px of arc from the pivot.
+
+    Each bump is (centre_px, half_width_px, amount_px); centre is signed, so
+    negative sits on the hour side. Floored at MINIMUM_STROKE_WIDTH.
+    """
+    def shape(u, u_pivot, span):
+        w = BASELINE_SHAPE(u, u_pivot, span)
+        from_pivot = (u - u_pivot) * span
+        for centre, half_width, amount in bumps:
+            w += amount * raised_cosine(from_pivot - centre, half_width)
+        return max(K["MINIMUM_STROKE_WIDTH"], w)
+    return shape
+
+
+def split_power(p_hour, p_minute, mid=None):
+    """A different exponent either side of the pivot, meeting at `mid`."""
+    mid = K["MIDDLE_WIDTH"] if mid is None else mid
+
+    def shape(u, u_pivot, span):
+        if u <= u_pivot:
+            return mid + (PEAK - mid) * (1.0 - u / u_pivot) ** p_hour
+        t = (u - u_pivot) / (1.0 - u_pivot)
+        return TIP + (mid - TIP) * (1.0 - t) ** p_minute
+    return shape
+
+
+def pressured(variation):
+    """The baseline under the shipped pressure multiplier at a given strength.
+
+    pressured(PRESSURE_VARIATION) is the shipped profile with only the waist
+    removed; it is the null case for the whole of track 3.
+    """
+    def profile(ctx, dense=None):
+        return _base(ctx, 1.0, variation)
+    profile.__name__ = f"pressured{variation:g}"
+    return profile
+
+
+def pressure_as_profile(amount_px):
+    """The pressure idea as a shape, in pixels rather than as a percentage.
+
+    The shipped multiplier follows 4p(1-p)(p_pivot - p): heavier before the
+    pivot, lighter after. At 0.20 that peaks near 0.15 px, under the ~0.3 px a
+    drawn width can resolve, which is why it reads as jitter. Here the same
+    curve is added, scaled so its larger lobe is `amount_px`.
+    """
+    def profile(ctx, dense=None):
+        widths = baseline(ctx)
+        start, _, _ = domain(ctx)
+        pp = ctx.pivot_position
+
+        def lobe(p):
+            return 4.0 * p * (1.0 - p) * (pp - p)
+        scale = max(abs(lobe(i / 400.0)) for i in range(401)) or 1.0
+        out = []
+        for index, w in enumerate(widths):
+            if ctx.arc[index] > start:
+                w += amount_px * lobe(ctx.position(index)) / scale
+            out.append(max(K["MINIMUM_STROKE_WIDTH"], w))
+        return out
+    profile.__name__ = f"pressure_profile{amount_px:g}"
+    return profile
+
+
+TRACK2_CONTROL = (
+    ("shipped, as drawn today", reference),
+    ("baseline: 6 -> 3 at pivot -> 1", baseline),
+    ("pivot value 2 px", from_shape(two_smoothstep(2.0))),
+    ("pivot value 2.5 px", from_shape(two_smoothstep(2.5))),
+    ("pivot value 4 px", from_shape(two_smoothstep(4.0))),
+    ("NO control value: one smoothstep", from_shape(single_smoothstep)),
+    ("3 px at the arc midpoint, not the pivot", from_shape(two_smoothstep(3.0, 0.5))),
+    ("3 px at one third of the arc", from_shape(two_smoothstep(3.0, 1.0 / 3.0))),
+)
+
+TRACK2_SHAPE = (
+    ("shipped, as drawn today", reference),
+    ("baseline: 6 -> 3 at pivot -> 1", baseline),
+    ("one smoothstep (hold 0)", from_shape(single_smoothstep)),
+    ("hold 10 px, then smoothstep", from_shape(hold_then_reduce(10.0))),
+    ("hold 20 px, then smoothstep", from_shape(hold_then_reduce(20.0))),
+    ("hold 30 px, then smoothstep", from_shape(hold_then_reduce(30.0))),
+    ("linear taper", from_shape(power(1.0))),
+    ("power 0.5 (stays wide, closes late)", from_shape(power(0.5))),
+    ("power 2 (falls early, long thin tail)", from_shape(power(2.0))),
+    ("power 3", from_shape(power(3.0))),
+    ("quarter ellipse", from_shape(circular)),
+)
+
+TRACK3 = (
+    ("shipped, as drawn today", reference),
+    ("baseline: 6 -> 3 at pivot -> 1", baseline),
+    ("pressure x0.20 (shipped strength)", pressured(K["PRESSURE_VARIATION"])),
+    ("pressure as a shape, 1 px lobe", pressure_as_profile(1.0)),
+    ("bulge +1 px, 12 px past the pivot", from_shape(with_bumps((12.0, 12.0, 1.0)))),
+    ("bulge +2 px, 12 px past the pivot", from_shape(with_bumps((12.0, 12.0, 2.0)))),
+    ("pinch -1.5 px, 8 px before the pivot", from_shape(with_bumps((-8.0, 8.0, -1.5)))),
+    ("pinch before, bulge after", from_shape(with_bumps((-8.0, 8.0, -1.5),
+                                                        (12.0, 12.0, 1.5)))),
+    ("hour falls fast, minute holds", from_shape(split_power(2.5, 0.5))),
+    ("hour holds, minute falls fast", from_shape(split_power(0.5, 2.5))),
+)
+
+
+def check_families(times=None, verbose=True):
+    """The new families must reduce to the shipped maths where they claim to."""
+    times = times or [(h, m) for h in range(12) for m in range(0, 60, 7)]
+    frames = raster.gather(times=times, want_frames=False)
+    worst_baseline = worst_pressured = 0.0
+    for frame in frames:
+        ctx = context_from(frame, separation_degrees(frame["hour"], frame["minute"]))
+        bare = _base(ctx, 1.0, 0.0)
+        worst_baseline = max(worst_baseline, max(
+            abs(a - b) for a, b in zip(baseline(ctx), bare)))
+        worst_pressured = max(worst_pressured, max(
+            abs(a - b) for a, b in
+            zip(pressured(K["PRESSURE_VARIATION"])(ctx), no_thinning(ctx))))
+    if verbose:
+        print(f"families vs the shipped maths, {len(frames)} frames")
+        print(f"  baseline vs shipped with waist open, pressure off: "
+              f"{worst_baseline:.3e} px")
+        print(f"  pressured(0.20) vs shipped with waist open:        "
+              f"{worst_pressured:.3e} px")
+    return max(worst_baseline, worst_pressured)
+
+
+def main() -> int:
+    worst = check()
+    # float32 in the C against float64 here, over widths of order 6 px
+    if worst > 1e-4:
+        print("FAIL: the reimplementation does not match the C")
+        return 1
+    if check_families() > 1e-9:
+        print("FAIL: a family does not reduce to the shipped profile")
+        return 1
+    print("ok")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -109,6 +109,13 @@ triangle A-B-centre.
   shown both at a moderate stem size and at the largest that fits inside the
   hands -- the case a ratio budget has to survive.
 - `shot.sh` -- rasterize named sheets to PNG so they can be looked at.
+- `profiles.py` -- the stroke width as one curve w(s), a width per centerline
+  sample, so a profile is a value rather than a patch to `main.c`.  `shipped`
+  reproduces `calculate_stroke_width` and is checked against the compiled C on
+  every minute; the track families are all expressed against it.
+- `sheet_profiles.py` -- renders those profiles through the firmware rasterizer
+  (`kink`, `track2`, `track3`), each as a whole-face sheet at 1:1 and a 4x crop,
+  and prices every row over all 720 minutes (`price` does the thinning alone).
 - `check_c_pivot.py` -- the one script here that tests the *watchface* rather
   than a model of it: it lifts `calculate_pivot_point` and its vector helpers
   verbatim out of `src/c/main.c`, compiles them, and compares the result against
@@ -134,7 +141,7 @@ triangle A-B-centre.
   annotated with how far it departs from the baseline row, in pixels, because
   the differences are usually too small to see unaided.
 - `render_anim.sh` -- the only part needing an external binary: Chromium
-  (`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, overridable with
+  (the pre-installed one under `/opt/pw-browsers`, overridable with
   `CHROME=`) to rasterize the frames. Override the output scale with `SCALE=2`.
 - `gifwriter.py` -- PNG -> animated GIF, standard library only. Exists because
   Chromium writes only PNG and the bundled ffmpeg is a stripped Playwright build

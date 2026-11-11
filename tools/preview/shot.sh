@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Rasterize the exploration sheets so they can actually be looked at.
 set -euo pipefail
-CHROME="${CHROME:-/opt/pw-browsers/chromium-1194/chrome-linux/chrome}"
+# The pre-installed Chromium's build number and layout change between images,
+# so find it rather than pinning a path that will go stale.
+CHROME="${CHROME:-$(ls -d /opt/pw-browsers/chromium-[0-9]*/chrome-linux*/chrome 2>/dev/null | sort -V | tail -1)}"
+[ -x "$CHROME" ] || { echo "no chromium found; set CHROME=" >&2; exit 1; }
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 for name in "$@"; do
   svg="$here/out/$name.svg"

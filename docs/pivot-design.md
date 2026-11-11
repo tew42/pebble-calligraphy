@@ -1779,3 +1779,114 @@ configurations.
 display imposes, and it coincides with `MINUTE_TIP_WIDTH` only by arithmetic
 accident. Naming it separately stops a future edit to the minute tip from
 silently changing the waist floor.
+
+## 47. The width profile as one curve, and what the thinning is for
+
+The envelope questions of sections 37-45 are one question: **what is the stroke
+width w(s) from the end of the hour swell to the minute point?** The four
+mechanisms in `main.c` are all perturbations of that curve -- the hour-side
+contraction and the minute taper are its two halves, the waist term is a local
+override at the pivot, and `PRESSURE_VARIATION` is a multiplier over the lot.
+`tools/preview/profiles.py` expresses the curve directly, as a width per
+centerline sample, so alternatives are values rather than patches to
+`calculate_stroke_width`. Its `shipped` profile reproduces the C to 1.4e-6 px
+and renders pixel-identically on 720 of 720 minutes; nothing else in the module
+is trusted without that.
+
+### Sampling: settled, bar one item
+
+| question | verdict |
+| --- | --- |
+| is the connector under-sampled? | No. Chord error at 30 segments is 0.024-0.055 px, an order below the 0.38 px lattice floor. (An earlier 1.424 px figure was a measurement bug -- samples matched by index rather than by arc length.) |
+| does refining the sampling converge on anything? | No. The float ribbon is unchanged (area 299.02 vs 299.00 at 30 vs 200 segments). The ~185 px that move are vertex rounding re-rolled. |
+| where is the drawing quantized? | Once, at `vec2_to_gpoint` on the polygon vertices: 0.377 px mean, 0.706 px max, which is exactly lattice rounding. The outline traces the same integers, so it is not a sub-pixel refinement of the fill. The minute core is a separate rounding of the centerline. Irreducible within `gpath`, whose `GPathInfo` holds `GPoint`. |
+| what does that do to a profile? | Of 49 samples only ~10 distinct drawn widths survive. Two profiles within ~0.3 px of each other at the samples are the same drawing. |
+
+Open: **the hour swell is under-sampled** -- 3 to 6 px of width over 2.5 px of
+arc, carried by two samples, a 2.27 px step per sample. It is the one real
+sampling defect, and it is the same question as whether the 49-point spacing
+can be derived rather than chosen: sample where w changes fastest. It should be
+fixed after a profile is chosen, since the placement follows the profile.
+
+### The thinning was being studied for the wrong reason
+
+Track 1 tried to replace the waist term with a curvature rule, `w <= 2R`, the
+condition for the inner offset not to cusp. Two things came out of it:
+
+- The shipped term saturates at a separation of 3.80 degrees, while the
+  centerline is sharpest at 5-11 degrees (R = 0.14-0.16 px). The two rules are
+  near mirror images, and a curvature rule spread over +/-4 px of arc holds the
+  pinch from 0 through 11 degrees.
+- That is an answer to a question nobody asked. The thinning is not there to
+  avoid a cusp or to separate the hands; it is there so the **pivot does not
+  read as a broad blob**. On that purpose it is simply the value of w at the
+  pivot, which is a property of the profile.
+
+So the profile is chosen first, with the waist held open, and thinning returns
+only if the chosen pivot width needs it once the hands close. If it does, the
+shipped separation term is the right tool; the curvature rule is not.
+
+What holding the waist open costs, over the whole clock rather than a sample:
+
+| change | frames | pixels | character |
+| --- | --- | --- | --- |
+| waist open, pressure left on | 13 of 720 | 919 | ink only added (543 new, 0 lost); worst frame 113 px at 02:11 |
+| pressure off as well | 718 of 720 | 15,233 | 21 px a frame, balanced |
+
+The 13 frames are exactly the minutes within 3.0 degrees of overlap. Exact
+overlap renders as a clean 3 px band -- nonzero winding fills the
+self-intersecting offset -- and opposition is untouched, since the opening is
+already 1 there.
+
+## 48. Profiles on a no-thinning baseline
+
+Sheets: `profiles-track2-control`, `profiles-track2-shape` and `profiles-track3`,
+each as `-face` (the whole 200x228 framebuffer at 1:1) and `-zoom` (the 42 px
+round the centre at 4x). Every row is priced against the same baseline -- the
+shipped two-smoothstep profile, waist open, pressure off -- over all 720
+minutes, split into ink appearing, ink vanishing and grey-level shifts.
+
+Three measurements that bear on what can be de-parametrized:
+
+**The pivot sits at a fixed place in the profile.** Measured from the swell's
+peak to the minute point, the pivot falls at 0.371-0.388 of the arc on every
+minute of the clock. So "3 px at the pivot" and "3 px at a fixed fraction of the
+arc" are nearly the same profile: placing the control value at one third differs
+from the baseline by at most 0.40 px. The profile does not need to know where
+the pivot is.
+
+**`MIDDLE_WIDTH` cannot simply be dropped, but it can be replaced.** One
+smoothstep from peak to point, with no control value, puts 4.33-4.45 px at the
+pivot and reads visibly heavy as the hands close; a linear taper puts 4.06-4.15.
+A quadratic taper, `w = tip + (peak - tip)(1 - u)^2`, puts 2.87-2.98 px there
+and stays within 0.65 px of the baseline everywhere -- with no control value
+and no reference to the pivot. Its tail is thinner, so the fill carries 56% of
+the arc at 10:10 against the baseline's 70%.
+
+| profile | width at pivot | max departure from baseline | px per frame |
+| --- | --- | --- | --- |
+| baseline, 6 -> 3 -> 1 | 3.00 | -- | -- |
+| control value 2 / 2.5 / 4 | 2.00 / 2.50 / 4.00 | 1.00 / 0.50 / 1.00 | 113 / 64 / 122 |
+| 3 px at one third of the arc | 2.96-2.98 | 0.40 | 33 |
+| 3 px at the arc midpoint | 3.39-3.50 | 0.78 | 78 |
+| one smoothstep | 4.33-4.45 | 1.64 | 132 |
+| linear | 4.06-4.15 | 1.25 | 139 |
+| power 2 | 2.87-2.98 | 0.65 | 70 |
+| power 3 | 2.15-2.24 | 1.21 | 152 |
+
+A control value of 2 px takes the fill away from the pivot outward (39% of the
+arc), leaving the whole minute hand to the outline and the core.
+
+**The pressure multiplier is below what the drawing can resolve.** At 0.20 it
+moves the requested width by at most 0.13 px, under the ~0.3 px floor, and the
+20 px a frame it changes are balanced between appearing and vanishing with
+one-level shifts the largest share. It is noise on the baseline, not a shape.
+Restated as a shape with a 1 px lobe it is visible, and changes 91 px a frame.
+
+Local features tied to the pivot (track 3) are at the edge of what the
+rasterizer shows. A 1 px bulge or a 1.5 px pinch each move ~21 px a frame -- the
+same count as the pressure noise, though all in one direction. At 2 px a bulge
+is plainly visible, but on an axis-aligned stroke (06:00, 12:00) it draws as a
+rectangular step rather than a swell, because both edges round together.
+
+No profile is chosen here.

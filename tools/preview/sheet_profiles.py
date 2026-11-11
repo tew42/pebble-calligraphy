@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Width-profile studies, drawn by the firmware's own rasterizer.
 
-    python3 tools/preview/sheet_profiles.py && ./shot.sh profiles-kink
+    python3 tools/preview/sheet_profiles.py [kink|price|track2|track3|all]
+    ./shot.sh profiles-track2-control-face ...
 
-Track 1 asks what to do where the centerline folds back on itself near hand
-overlap. Everything is rendered through `raster.render_polygons`, so a profile
-built in Python is drawn by exactly the pipeline that draws the shipped one --
+Everything is rendered through `raster.render_polygons`, so a profile built in
+Python is drawn by exactly the pipeline that draws the shipped one --
 `check_raster.py` check 10 asserts that, and `profiles.check()` asserts the
 shipped profile reproduces the compiled C to 1.4e-6 px over all 720 minutes.
+
+  kink    track 1: what to do where the centerline folds back near overlap
+  price   what removing the thinning costs over the whole clock
+  track2  symmetric / monotonic profiles, on a no-thinning baseline
+  track3  asymmetric / non-monotonic profiles, same baseline
 """
 from __future__ import annotations
 
@@ -37,6 +42,19 @@ CENTRE = (100.0, 114.0)
 #: Nothing finer than 0.5 degrees exists: the face updates once a minute.
 KINK_TIMES = ((12, 0), (9, 49), (7, 38), (6, 33), (8, 44),
               (10, 55), (8, 43), (9, 50), (12, 2))
+
+
+#: Judge a profile as a watchface: separations spread over the shape space,
+#: ending on exact opposition.
+NORMAL_TIMES = ((1, 13), (3, 0), (10, 10), (8, 20), (12, 33), (6, 0))
+
+#: Judge whether the pivot reads broad as the hands close. A subset of
+#: KINK_TIMES: with the waist held open nothing varies inside the old acting
+#: band any more, so its 0.5-degree steps have nothing left to resolve.
+CLOSING_TIMES = ((12, 0), (7, 38), (10, 55), (9, 50), (12, 2))
+
+#: The column whose width profile is plotted beside each row.
+PLOT_TIME = (10, 10)
 
 
 def build(times, variants):
@@ -129,7 +147,272 @@ def sheet(path, title, notes, times, variants, zoom=5.0, size=170,
     return rows
 
 
-def main() -> int:
+# --- pricing over the whole clock -------------------------------------------
+
+CLOCK = [(h, m) for h in range(12) for m in range(60)]
+_clock_frames = None
+
+
+def clock_frames():
+    global _clock_frames
+    if _clock_frames is None:
+        _clock_frames = raster.gather(times=CLOCK)
+    return _clock_frames
+
+
+def render_clock(fn):
+    """Every minute of the clock under one profile, as framebuffers."""
+    specs = []
+    for frame in clock_frames():
+        ctx = profiles.context_from(
+            frame, profiles.separation_degrees(frame["hour"], frame["minute"]))
+        points = [(x, y) for x, y, *_ in frame["centerline"]]
+        specs.append((W.polygon_from(points, profiles.to_polygon_widths(fn(ctx)),
+                                     W.bisector_tangents(points)),
+                      points[frame["pivot"]:]))
+    return [frame["buffer"] for frame in raster.render_polygons(specs)]
+
+
+def price(buffers, against):
+    """Differing pixels over the clock, split by what kind of difference.
+
+    A bare total hides the character of a change: ink appearing or vanishing is
+    a shape change, a one-level grey shift is rounding noise, and the two can
+    sum to the same number.
+    """
+    levels = raster.LEVELS
+    out = dict(frames=0, appear=0, vanish=0, one=0, multi=0, worst=0,
+               worst_at=None)
+    for (hour, minute), a, b in zip(CLOCK, buffers, against):
+        if a == b:
+            continue
+        out["frames"] += 1
+        here = 0
+        for p, q in zip(a, b):
+            if p == q:
+                continue
+            here += 1
+            mine, theirs = levels[p], levels[q]
+            if theirs == 0:
+                out["appear"] += 1
+            elif mine == 0:
+                out["vanish"] += 1
+            elif abs(mine - theirs) == 1:
+                out["one"] += 1
+            else:
+                out["multi"] += 1
+        if here > out["worst"]:
+            out["worst"], out["worst_at"] = here, (hour, minute)
+    out["total"] = out["appear"] + out["vanish"] + out["one"] + out["multi"]
+    return out
+
+
+def describe(cost):
+    if not cost["total"]:
+        return "identical on all 720 minutes"
+    hour, minute = cost["worst_at"]
+    return (f"{cost['total']} px over {cost['frames']}/720 frames "
+            f"({cost['total'] / 720.0:.1f}/frame; worst {cost['worst']} at "
+            f"{hour % 12 or 12:02d}:{minute:02d}) -- appear {cost['appear']}, "
+            f"vanish {cost['vanish']}, one level {cost['one']}, "
+            f"two or more {cost['multi']}")
+
+
+def price_thinning() -> int:
+    """What the waist term is worth, over the clock rather than nine columns."""
+    as_drawn = render_clock(profiles.reference)
+    identical = sum(a == f["buffer"] for a, f in zip(as_drawn, clock_frames()))
+    print(f"control: python `reference` vs the compiled C: {identical}/720 identical")
+    open_waist = render_clock(profiles.no_thinning)
+    print("waist held open, pressure left on, vs shipped:")
+    print("  " + describe(price(open_waist, as_drawn)))
+    bare = render_clock(profiles.baseline)
+    print("waist held open AND pressure off (the track 2/3 baseline), vs shipped:")
+    print("  " + describe(price(bare, as_drawn)))
+    print("pressure alone (baseline vs waist-open-with-pressure):")
+    print("  " + describe(price(bare, open_waist)))
+    touched = [(h, m) for (h, m), a, b in zip(CLOCK, open_waist, as_drawn) if a != b]
+    seps = sorted({round(profiles.separation_degrees(h, m), 1) for h, m in touched})
+    print(f"separations of the frames the waist term touches: {seps}")
+    return 0
+
+
+# --- the track sheets -------------------------------------------------------
+
+def fill_arc(arc, widths):
+    """Fraction of the arc over which the filled polygon is at least 1 px wide.
+
+    Below that gpath drops the span outright, so past this point the stroke is
+    the outline and the minute core and the profile no longer reaches the fill.
+    """
+    threshold = 1.0 + profiles.K["OUTLINE_WIDTH_COMPENSATION"]
+    covered = 0.0
+    for i in range(1, len(arc)):
+        a, b = widths[i - 1], widths[i]
+        length = arc[i] - arc[i - 1]
+        if a >= threshold and b >= threshold:
+            covered += length
+        elif a >= threshold or b >= threshold:
+            covered += length * abs((max(a, b) - threshold) / (b - a))
+    return covered / arc[-1] if arc[-1] else 0.0
+
+
+def plot(canvas, x, y, w, h, arc, pivot, widths, under=None):
+    """A row's width profile at one time: requested stroke width against arc."""
+    top = 6.5
+    canvas.rect(x, y, w, h, fill="#0b0d10", stroke="#242a31", stroke_width=0.6)
+
+    def at(a, v):
+        return (x + w * a / arc[-1], y + h - h * min(v, top) / top)
+    # below this the filled polygon is under 1 px and gpath draws nothing
+    fx, fy = at(0.0, 2.0)
+    canvas.line(x, fy, x + w, fy, stroke=S.GUIDE, stroke_width=0.6, dash="3,3")
+    px, _ = at(arc[pivot], 0.0)
+    canvas.line(px, y, px, y + h, stroke=S.PIVOT, stroke_width=0.6, opacity=0.7)
+    if under is not None:
+        canvas.polyline([at(a, v) for a, v in zip(arc, under)],
+                        stroke=S.REFERENCE, stroke_width=1.0, opacity=0.65)
+    canvas.polyline([at(a, v) for a, v in zip(arc, widths)], stroke=S.INK,
+                    stroke_width=1.3)
+    for value in (2, 4, 6):
+        canvas.text(x + w + 3, at(0.0, value)[1] + 2.5, str(value), size=6.5,
+                    fill=S.DIM)
+
+
+def track_sheets(stem, title, notes, variants, baseline_row=1):
+    """One render pass, two sheets: the whole face at 1:1 and the pivot at 4x.
+
+    Row `baseline_row` is the family baseline every other row is priced
+    against, over all 720 minutes. Row 0 is the watchface as drawn today, kept
+    for the eye; it is priced against the baseline like any other row.
+    """
+    times = NORMAL_TIMES + CLOSING_TIMES
+    base, rows = build(times, variants)
+    plot_col = times.index(PLOT_TIME)
+    plot_arc = [row[4] for row in base[plot_col]["centerline"]]
+    plot_pivot = base[plot_col]["pivot"]
+
+    clock = [render_clock(fn) for _, fn in variants]
+    costs = [None if r == baseline_row else price(clock[r], clock[baseline_row])
+             for r in range(len(variants))]
+    base_widths = rows[baseline_row][2]
+
+    for suffix, zoom, size, what in (
+            ("face", 1.0, 200, "Each cell is the whole 200x228 emery framebuffer "
+             "at actual size."),
+            ("zoom", 5.0, 170, "Each cell is the 42 px around the watch centre at "
+             "4x; one square is one device pixel.")):
+        label_w, gap, group_gap = 320, 10, 26
+        lines = notes + [what]
+        top = 118 + 15 * len(lines)
+        cell_h = 228 if zoom <= 1.0 else size
+
+        def column_x(col):
+            return (label_w + col * (size + gap)
+                    + (group_gap if col >= len(NORMAL_TIMES) else 0))
+        canvas = S.Canvas(column_x(len(times)) + 20,
+                          top + len(rows) * (cell_h + gap) + 24, background=S.PAGE)
+        canvas.text(24, 34, f"{title} -- {suffix}", size=17, fill=S.LABEL,
+                    weight="600")
+        for i, line in enumerate(lines):
+            canvas.text(24, 56 + 15 * i, line, size=10, fill=S.DIM)
+        canvas.text(column_x(0), top - 28, "AS A WATCHFACE", size=9, fill=S.DIM,
+                    weight="600")
+        canvas.text(column_x(len(NORMAL_TIMES)), top - 28,
+                    "HANDS CLOSING -- does the pivot read broad?", size=9,
+                    fill=S.DIM, weight="600")
+        for col, frame in enumerate(base):
+            d = profiles.separation_degrees(frame["hour"], frame["minute"])
+            canvas.text(column_x(col) + size / 2, top - 10,
+                        f"{frame['hour'] % 12 or 12:02d}:{frame['minute']:02d}  "
+                        f"d={d:.1f}", size=9, fill=S.LABEL, anchor="middle",
+                        weight="600")
+
+        for r, (label, frames, widths) in enumerate(rows):
+            y = top + r * (cell_h + gap)
+            canvas.text(24, y + 14, label, size=10, fill=S.LABEL, weight="600")
+            share = fill_arc(plot_arc, widths[plot_col])
+            if r == baseline_row:
+                canvas.text(24, y + 28, "family baseline: no thinning, no pressure",
+                            size=8, fill=S.DIM)
+            else:
+                cost = costs[r]
+                dw = max(max(abs(a - b) for a, b in zip(w, bw))
+                         for w, bw in zip(widths, base_widths))
+                loud = "#f4d35e"
+                canvas.text(24, y + 28,
+                            f"vs baseline, 720 min: {cost['total'] / 720.0:.1f} "
+                            f"px/frame, {cost['frames']} frames", size=8,
+                            fill=loud if cost["total"] else S.DIM)
+                canvas.text(24, y + 40,
+                            f"appear {cost['appear']}  vanish {cost['vanish']}  "
+                            f"1-level {cost['one']}  2+ {cost['multi']}", size=8,
+                            fill=S.DIM)
+                canvas.text(24, y + 52, f"max width delta {dw:.2f} px", size=8,
+                            fill=loud if dw >= 0.3 else S.DIM)
+            canvas.text(24, y + 64,
+                        f"fill carries {100.0 * share:.0f}% of the arc at "
+                        f"{PLOT_TIME[0]}:{PLOT_TIME[1]:02d}", size=8, fill=S.DIM)
+            plot(canvas, 24, y + 72, 262, 84, plot_arc, plot_pivot,
+                 widths[plot_col],
+                 None if r == baseline_row else base_widths[plot_col])
+            for col, (frame, cframe) in enumerate(zip(frames, base)):
+                ox = column_x(col)
+                W.panel(canvas, ox, y, size, cell_h, cframe, 0, zoom,
+                        frame["buffer"])
+                canvas.text(ox + 4, y + cell_h - 4,
+                            f"pivot w {widths[col][cframe['pivot']]:.2f}",
+                            size=7, fill=S.DIM)
+        os.makedirs(OUT, exist_ok=True)
+        path = os.path.join(OUT, f"{stem}-{suffix}.svg")
+        canvas.write(path)
+        print("wrote", path)
+
+    for (label, _), cost in zip(variants, costs):
+        print(f"  {label:42s} "
+              + ("(baseline)" if cost is None else describe(cost)))
+    return rows, costs
+
+
+COMMON_NOTES = [
+    "Baseline for every delta: the shipped two-smoothstep profile with the "
+    "near-overlap thinning removed and the pressure multiplier off.",
+    "Left of each row: requested stroke width against arc at 10:10 (white), the "
+    "baseline in orange, the pivot in blue. Under the dashed line the filled "
+    "polygon is below 1 px and only the outline and core draw.",
+    "Only ~10 distinct widths survive vertex rounding, so rows within ~0.3 px of "
+    "each other are the same drawing. Closing columns are different hours, so "
+    "heading varies with separation.",
+]
+
+
+def track2() -> int:
+    track_sheets(
+        "profiles-track2-control",
+        "Track 2a. The value at the pivot, and whether it is needed at all",
+        ["Monotonic profiles from the swell's peak (6 px) to the minute point "
+         "(1 px). What varies: the control value at the pivot, and where it sits."]
+        + COMMON_NOTES, profiles.TRACK2_CONTROL)
+    track_sheets(
+        "profiles-track2-shape",
+        "Track 2b. Shapes with no control value",
+        ["Monotonic profiles from the swell's peak (6 px) to the minute point "
+         "(1 px), none of which knows where the pivot is."]
+        + COMMON_NOTES, profiles.TRACK2_SHAPE)
+    return 0
+
+
+def track3() -> int:
+    track_sheets(
+        "profiles-track3",
+        "Track 3. Asymmetric and non-monotonic profiles",
+        ["The baseline plus a feature tied to the pivot: pressure, a bulge out "
+         "of the turn, a pinch into it, or a different fall either side."]
+        + COMMON_NOTES, profiles.TRACK3)
+    return 0
+
+
+def kink() -> int:
     notes = [
         "Near overlap the centerline folds back on itself. At exact overlap it is a true "
         "reversal: the path runs in along a ray and back out along the same ray.",
@@ -156,5 +439,18 @@ def main() -> int:
     return 0
 
 
+
+def main(argv) -> int:
+    which = argv[1] if len(argv) > 1 else "all"
+    jobs = {"kink": kink, "price": price_thinning, "track2": track2,
+            "track3": track3}
+    if which == "all":
+        return max(job() for job in jobs.values())
+    if which not in jobs:
+        print(__doc__)
+        return 2
+    return jobs[which]()
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv))
