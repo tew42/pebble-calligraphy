@@ -2091,27 +2091,22 @@ which the centred row reproduces on 720 of 720 minutes):
 - **Spine.** `k = k0` the whole way: the same side of travel throughout.
 - **Screen direction.** `k = k0 (n . L)`, the heavier edge facing lower right.
 
-| rule | max edge shift | px/frame | frames with grey inside ink |
-| --- | --- | --- | --- |
-| centred (shipped) | -- | -- | 72 |
-| outside of bend, 0.5 | 0.51 | 37 | 71 |
-| outside of bend, 1 | 1.02 | 68 | 115 |
-| spine, 0.5 | 1.24 | 184 | 121 |
-| spine, 1 | 2.47 | 308 | 293 |
-| screen, 0.5 | 1.23 | 126 | 87 |
-| screen, 1 | 2.47 | 212 | 171 |
+| rule | max edge shift | px/frame |
+| --- | --- | --- |
+| outside of bend, 0.5 | 0.51 | 37 |
+| outside of bend, 1 | 1.02 | 68 |
+| spine, 0.5 | 1.24 | 184 |
+| spine, 1 | 2.47 | 308 |
+| screen, 0.5 | 1.23 | 126 |
+| screen, 1 | 2.47 | 212 |
 
 Edge shift is how far the stroke's middle moves off the centerline. Every
 change is balanced between ink appearing and vanishing, as it must be: the
 width is the same, only moved.
 
-**Grey inside solid ink is an existing artefact, not a new one.** The last
-column counts grey pixels whose four neighbours are fully lit, near the centre.
-The shipped stroke already has them on 72 minutes, all near overlap: where the
-stroke folds back on itself, the 1 px antialiased outline traces polygon edges
-that lie inside the other half's ink and draws grey seams through it. Moving the
-width sideways moves more edges into the ink. Outside of the bend at 0.5 leaves
-the count where it is; the spine at 1 quadruples it.
+A column counting "grey inside solid ink" was here and has been removed: its
+detector counted ordinary antialiasing, and the defect it claimed does not
+exist. Section 54 has the investigation.
 
 **Shifting the minute half leaves the core behind.** Because the core stays on
 the centerline while the polygon moves off it, a rule that shifts the minute
@@ -2124,3 +2119,33 @@ hour body and under 1 px on most of the minute hand. Outside of the bend at 0.5
 moves only about half a pixel at most.
 
 No rule is chosen here.
+
+## 54. There is no overlap seam
+
+Section 53 first reported grey seams inside solid ink on 72 minutes near hand
+overlap, attributed to the outline tracing edges inside the folded stroke. That
+was a measurement error. The detector counted grey pixels with four fully lit
+neighbours, and nearly all of those are correct antialiasing:
+
+- **Thin diagonal strokes.** On the minute half the polygon is about 1 px wide
+  and the stroke is drawn by the outline and the core alone; a staircase corner
+  of an antialiased diagonal can have lit pixels on all four sides.
+- **Jogs at rounded vertices.** Where consecutive polygon vertices round to
+  different columns the edge steps by a pixel, and the step is antialiased.
+- **Band edges near overlap.** At 1-4 degrees the two strands lie side by side
+  and their outer edges nearly coincide; pixels on that edge are inside both
+  strands by winding and correctly grey.
+
+Restricting to the one case that would be a defect -- a non-white pixel inside
+the polygon with winding of magnitude 2 or more, where both strands call for
+solid ink -- leaves 37 px over 9 minutes for the whole clock, and inspection
+puts them on the combined band's outer edge.
+
+**The firmware quirk is real but does not matter here.** `prv_fill_path_with_cb_aa`
+does not compute a nonzero union: per scanline it sorts the up and down
+crossings separately and fills the j-th up to the j-th down, eroding each span
+by a pixel at both ends. Where the stroke overlaps itself that can split one run
+of ink into abutting spans. But drawing the hour and minute halves as two
+separate paths, which removes every cross-strand pairing, changes only 3 of the
+37 pixels. A non-antialiased fill changes 12,312 px elsewhere and does not
+remove them either. No fix is warranted.
