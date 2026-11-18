@@ -681,6 +681,115 @@ ASYMMETRIC = (
 )
 
 
+# --- envelopes asymmetric about the centerline ------------------------------
+#
+# The quadratic fixes how wide the stroke is; these decide where that width
+# sits. A split k in [-1, 1] per sample puts the +normal edge (the C's "left",
+# centerline + normal * half) at pw (1 + k) / 2 and the other at pw (1 - k) / 2,
+# pw being the polygon width. k = 0 is the centred stroke; k = +-1 puts one edge
+# on the centerline. The total width is untouched, so the profile is still the
+# quadratic. The minute core stays on the centerline: it marks where the hand
+# points.
+
+@dataclass
+class Envelope:
+    widths: list    # stroke width per sample, as a plain profile returns
+    split: list     # k per sample
+
+
+def _normals(ctx):
+    import sheet_workshop as W
+    return [(-ty, tx) for tx, ty in W.bisector_tangents(ctx.points)]
+
+
+def _connector(ctx):
+    """Arc positions of the connector's two ends, read from main.c's layout."""
+    counts = read_defines(open(MAIN_C).read(),
+                          ("HOUR_STEM_SEGMENTS", "CONNECTOR_SEGMENTS"))
+    first = int(counts["HOUR_STEM_SEGMENTS"])
+    last = first + int(counts["CONNECTOR_SEGMENTS"])
+    return ctx.arc[first], ctx.arc[last], first, last
+
+
+def turning(ctx):
+    """Signed total turn of the connector, in radians, in the +normal sense.
+
+    Positive means the tangent rotates towards +normal, so +normal is the inside
+    of the bend. A straight stroke (06:00) is 0; a full reversal is +-pi.
+    """
+    _, _, first, last = _connector(ctx)
+    total = 0.0
+    p = ctx.points
+    for i in range(first + 1, last + 1):
+        ux, uy = p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]
+        vx, vy = p[i + 1][0] - p[i][0], p[i + 1][1] - p[i][1]
+        if math.hypot(ux, uy) < 1e-9 or math.hypot(vx, vy) < 1e-9:
+            continue
+        total += math.atan2(ux * vy - uy * vx, ux * vx + uy * vy)
+    return total
+
+
+def outside_of_bend(k0):
+    """Extra width on the outside of the turn, strongest at the pivot.
+
+    k = -k0 * g(s) * turn / pi: zero on a straight stroke, largest at a full
+    reversal, and g fades from 1 at the pivot to 0 at both ends of the connector
+    so the straight stems stay centred.
+    """
+    def profile(ctx, dense=None):
+        widths = quadratic(ctx)
+        s0, s1, _, _ = _connector(ctx)
+        sp = ctx.arc[ctx.pivot]
+        strength = -k0 * turning(ctx) / math.pi
+        split = []
+        for a in ctx.arc:
+            if s0 < a <= sp:
+                g = smooth_unit((a - s0) / (sp - s0)) if sp > s0 else 1.0
+            elif sp < a < s1:
+                g = smooth_unit((s1 - a) / (s1 - sp)) if s1 > sp else 1.0
+            else:
+                g = 0.0
+            split.append(clamp(strength * g, -1.0, 1.0))
+        return Envelope(widths, split)
+    profile.__name__ = f"outside_of_bend{k0:g}"
+    return profile
+
+
+def spine(k0):
+    """The same share on the same side of travel along the whole stroke."""
+    def profile(ctx, dense=None):
+        widths = quadratic(ctx)
+        return Envelope(widths, [k0] * len(widths))
+    profile.__name__ = f"spine{k0:g}"
+    return profile
+
+
+#: Lower right on screen (y grows downwards).
+LIGHT = (math.sqrt(0.5), math.sqrt(0.5))
+
+
+def screen_direction(k0, towards=LIGHT):
+    """The heavier edge always faces `towards` on screen: k = k0 (n . L)."""
+    def profile(ctx, dense=None):
+        widths = quadratic(ctx)
+        split = [clamp(k0 * (nx * towards[0] + ny * towards[1]), -1.0, 1.0)
+                 for nx, ny in _normals(ctx)]
+        return Envelope(widths, split)
+    profile.__name__ = f"screen_direction{k0:g}"
+    return profile
+
+
+CENTERLINE = (
+    ("quadratic, centred (as shipped now)", quadratic),
+    ("outside of the bend, k = 0.5", outside_of_bend(0.5)),
+    ("outside of the bend, k = 1", outside_of_bend(1.0)),
+    ("spine: one side of travel, k = 0.5", spine(0.5)),
+    ("spine: one side of travel, k = 1", spine(1.0)),
+    ("faces lower right on screen, k = 0.5", screen_direction(0.5)),
+    ("faces lower right on screen, k = 1", screen_direction(1.0)),
+)
+
+
 def check_families(times=None, verbose=True):
     """The new families must reduce to the shipped maths where they claim to."""
     times = times or [(h, m) for h in range(12) for m in range(0, 60, 7)]

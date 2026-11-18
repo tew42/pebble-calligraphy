@@ -2072,3 +2072,55 @@ examines the waist, pressure or the two-smoothstep profile builds `main.c` as of
 `124c0b0` (`sheet_envelope.main_c_at(LEGACY)`), and the drivers compile against
 either version. All eighteen `profiles-*` sheets regenerate byte-identical from
 the pinned source.
+
+## 53. Where the width sits: envelopes asymmetric about the centerline
+
+The quadratic fixes how wide the stroke is. A split `k` in [-1, 1] per sample
+decides where that width sits: the +normal edge at `pw (1 + k) / 2` from the
+centerline, the other at `pw (1 - k) / 2`, total width unchanged. `k = 0` is
+the centred stroke; `k = 1` puts one edge on the centerline. The minute core
+stays on the centerline, since it marks where the hand points.
+
+Three rules for `k`, each at 0.5 and 1 (`profiles.CENTERLINE`; sheets
+`profiles-centerline-face` and `-zoom`, priced against the current `main.c`,
+which the centred row reproduces on 720 of 720 minutes):
+
+- **Outside of the bend.** `k = -k0 g(s) turn / pi`, with `turn` the connector's
+  signed total turning, so a straight stroke gets none and a full reversal the
+  most, and `g` fading from 1 at the pivot to 0 at the connector's ends.
+- **Spine.** `k = k0` the whole way: the same side of travel throughout.
+- **Screen direction.** `k = k0 (n . L)`, the heavier edge facing lower right.
+
+| rule | max edge shift | px/frame | frames with grey inside ink |
+| --- | --- | --- | --- |
+| centred (shipped) | -- | -- | 72 |
+| outside of bend, 0.5 | 0.51 | 37 | 71 |
+| outside of bend, 1 | 1.02 | 68 | 115 |
+| spine, 0.5 | 1.24 | 184 | 121 |
+| spine, 1 | 2.47 | 308 | 293 |
+| screen, 0.5 | 1.23 | 126 | 87 |
+| screen, 1 | 2.47 | 212 | 171 |
+
+Edge shift is how far the stroke's middle moves off the centerline. Every
+change is balanced between ink appearing and vanishing, as it must be: the
+width is the same, only moved.
+
+**Grey inside solid ink is an existing artefact, not a new one.** The last
+column counts grey pixels whose four neighbours are fully lit, near the centre.
+The shipped stroke already has them on 72 minutes, all near overlap: where the
+stroke folds back on itself, the 1 px antialiased outline traces polygon edges
+that lie inside the other half's ink and draws grey seams through it. Moving the
+width sideways moves more edges into the ink. Outside of the bend at 0.5 leaves
+the count where it is; the spine at 1 quadruples it.
+
+**Shifting the minute half leaves the core behind.** Because the core stays on
+the centerline while the polygon moves off it, a rule that shifts the minute
+half (spine, screen) draws a visible step where the polygon gives out and the
+core carries on alone, plainest at 06:00. Outside of the bend fades to zero on
+the minute stem and avoids this.
+
+**At 1:1 the effect is small.** The largest shift is about 2.5 px on a 6 px
+hour body and under 1 px on most of the minute hand. Outside of the bend at 0.5
+moves only about half a pixel at most.
+
+No rule is chosen here.

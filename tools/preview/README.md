@@ -124,6 +124,8 @@ triangle A-B-centre.
   `quadratic` re-runs one profile against `main.c` compiled with other hand
   lengths and hour thicknesses, each checked pixel-identical to the C first.
   `exponent` sweeps the quadratic's exponent and two asymmetric variants of it.
+  `centerline` keeps the quadratic's width and moves where it sits about the
+  centerline (outside of the bend, a spine, a fixed screen direction).
 - `check_c_pivot.py` -- the one script here that tests the *watchface* rather
   than a model of it: it lifts `calculate_pivot_point` and its vector helpers
   verbatim out of `src/c/main.c`, compiles them, and compares the result against

@@ -15,6 +15,7 @@ shipped profile reproduces the compiled C to 1.4e-6 px over all 720 minutes.
   track3  asymmetric / non-monotonic profiles, same baseline
   quadratic  the quadratic taper at other hand lengths and hour thicknesses
   exponent   the quadratic's exponent swept, and asymmetric variants of it
+  centerline envelopes asymmetric about the centerline, on the current main.c
 """
 from __future__ import annotations
 
@@ -60,6 +61,35 @@ CLOSING_TIMES = ((12, 0), (7, 38), (10, 55), (9, 50), (12, 2))
 PLOT_TIME = (10, 10)
 
 
+def split_of(result):
+    """(widths, split) from a profile's result; split is None when centred."""
+    if isinstance(result, profiles.Envelope):
+        return result.widths, result.split
+    return result, None
+
+
+def polygon_split(points, widths, splits, tangents):
+    """`W.polygon_from` with the width shared unevenly between the two edges.
+
+    The +normal edge gets pw (1 + k) / 2 and the other pw (1 - k) / 2. With no
+    split, or k = 0 throughout, this is polygon_from to the last bit.
+    """
+    if splits is None:
+        return W.polygon_from(points, widths, tangents)
+    n = len(points)
+    left, right = [None] * n, [None] * n
+    for i in range(n):
+        tx, ty = tangents[i]
+        nx, ny = -ty, tx
+        width = max(0.0, widths[i])
+        near = width * (1.0 + splits[i]) * 0.5
+        far = width * (1.0 - splits[i]) * 0.5
+        left[i] = (points[i][0] + nx * near, points[i][1] + ny * near)
+        right[i] = (points[i][0] - nx * far, points[i][1] - ny * far)
+    left[-1] = right[-1] = points[-1]          # the minute tip collapse
+    return left + right[::-1]
+
+
 def build(times, variants, source=profiles.LEGACY_SOURCE):
     """Render every (variant, time) cell and return frames plus diagnostics.
 
@@ -71,17 +101,19 @@ def build(times, variants, source=profiles.LEGACY_SOURCE):
                           source=source)
     rows = []
     for label, fn in variants:
-        specs, widths = [], []
+        specs, widths, splits = [], [], []
         for frame, dframe in zip(base, dense):
             ctx = profiles.context_from(
                 frame, profiles.separation_degrees(frame["hour"], frame["minute"]))
-            w = fn(ctx, dframe)
+            w, k = split_of(fn(ctx, dframe))
             widths.append(w)
+            splits.append(k)
             poly = profiles.to_polygon_widths(w)
             points = [(x, y) for x, y, *_ in frame["centerline"]]
-            specs.append((W.polygon_from(points, poly, W.bisector_tangents(points)),
+            specs.append((polygon_split(points, poly, k, W.bisector_tangents(points)),
                           [(x, y) for x, y, *_ in frame["centerline"][frame["pivot"]:]]))
-        rows.append((label, raster.render_polygons(specs), widths))
+        rows.append((label, raster.render_polygons(specs), widths,
+                     None if all(k is None for k in splits) else splits))
     return base, rows
 
 
@@ -127,7 +159,7 @@ def sheet(path, title, notes, times, variants, zoom=5.0, size=170,
                     weight="600")
 
     shipped_bufs = None
-    for r, (label, frames, widths) in enumerate(rows):
+    for r, (label, frames, widths, _) in enumerate(rows):
         y = top + r * (cell_h + gap)
         canvas.text(24, y + 16, label, size=10, fill=S.LABEL, weight="600")
         if shipped_bufs is None:
@@ -183,8 +215,9 @@ def render_clock(fn, overrides=None, widths=profiles.SHIPPED_WIDTHS,
             frame, profiles.separation_degrees(frame["hour"], frame["minute"]),
             widths)
         points = [(x, y) for x, y, *_ in frame["centerline"]]
-        specs.append((W.polygon_from(points, profiles.to_polygon_widths(fn(ctx)),
-                                     W.bisector_tangents(points)),
+        w, k = split_of(fn(ctx))
+        specs.append((polygon_split(points, profiles.to_polygon_widths(w), k,
+                                    W.bisector_tangents(points)),
                       points[frame["pivot"]:]))
     return [frame["buffer"] for frame in raster.render_polygons(specs)]
 
@@ -295,20 +328,50 @@ def plot(canvas, x, y, w, h, arc, pivot, widths, under=None, top=6.5,
                     fill=S.DIM)
 
 
-def track_sheets(stem, title, notes, variants, baseline_row=1):
+def plot_silhouette(canvas, x, y, w, h, arc, pivot, widths, split):
+    """Where the width sits: both edges' distance from the centerline.
+
+    The centerline runs across the middle; the +normal edge is drawn above it
+    and the other below, in white, with the centred stroke in orange.
+    """
+    reach = 3.5
+    canvas.rect(x, y, w, h, fill="#0b0d10", stroke="#242a31", stroke_width=0.6)
+    mid = y + h / 2.0
+
+    def at(a, v):
+        return (x + w * a / arc[-1], mid - (h / 2.0) * max(-reach, min(v, reach)) / reach)
+    canvas.line(x, mid, x + w, mid, stroke=S.GUIDE, stroke_width=0.6, dash="3,3")
+    px, _ = at(arc[pivot], 0.0)
+    canvas.line(px, y, px, y + h, stroke=S.PIVOT, stroke_width=0.6, opacity=0.7)
+    for sign in (1.0, -1.0):
+        canvas.polyline([at(a, sign * v * 0.5) for a, v in zip(arc, widths)],
+                        stroke=S.REFERENCE, stroke_width=1.0, opacity=0.65)
+    canvas.polyline([at(a, v * (1.0 + k) * 0.5) for a, v, k in zip(arc, widths, split)],
+                    stroke=S.INK, stroke_width=1.3)
+    canvas.polyline([at(a, -v * (1.0 - k) * 0.5) for a, v, k in zip(arc, widths, split)],
+                    stroke=S.INK, stroke_width=1.3)
+    canvas.text(x + w + 3, y + 8, "+n", size=6.5, fill=S.DIM)
+    canvas.text(x + w + 3, y + h - 2, "-n", size=6.5, fill=S.DIM)
+
+
+def track_sheets(stem, title, notes, variants, baseline_row=1,
+                 source=profiles.LEGACY_SOURCE,
+                 baseline_note="family baseline: no thinning, no pressure"):
     """One render pass, two sheets: the whole face at 1:1 and the pivot at 4x.
 
     Row `baseline_row` is the family baseline every other row is priced
     against, over all 720 minutes. Row 0 is the watchface as drawn today, kept
     for the eye; it is priced against the baseline like any other row.
+    Rows whose profile returns an Envelope are drawn with the split, and get an
+    edge silhouette in place of the width plot.
     """
     times = NORMAL_TIMES + CLOSING_TIMES
-    base, rows = build(times, variants)
+    base, rows = build(times, variants, source)
     plot_col = times.index(PLOT_TIME)
     plot_arc = [row[4] for row in base[plot_col]["centerline"]]
     plot_pivot = base[plot_col]["pivot"]
 
-    clock = [render_clock(fn) for _, fn in variants]
+    clock = [render_clock(fn, source=source) for _, fn in variants]
     costs = [None if r == baseline_row else price(clock[r], clock[baseline_row])
              for r in range(len(variants))]
     base_widths = rows[baseline_row][2]
@@ -344,13 +407,12 @@ def track_sheets(stem, title, notes, variants, baseline_row=1):
                         f"d={d:.1f}", size=9, fill=S.LABEL, anchor="middle",
                         weight="600")
 
-        for r, (label, frames, widths) in enumerate(rows):
+        for r, (label, frames, widths, splits) in enumerate(rows):
             y = top + r * (cell_h + gap)
             canvas.text(24, y + 14, label, size=10, fill=S.LABEL, weight="600")
             share = fill_arc(plot_arc, widths[plot_col])
             if r == baseline_row:
-                canvas.text(24, y + 28, "family baseline: no thinning, no pressure",
-                            size=8, fill=S.DIM)
+                canvas.text(24, y + 28, baseline_note, size=8, fill=S.DIM)
             else:
                 cost = costs[r]
                 dw = max(max(abs(a - b) for a, b in zip(w, bw))
@@ -364,14 +426,26 @@ def track_sheets(stem, title, notes, variants, baseline_row=1):
                             f"appear {cost['appear']}  vanish {cost['vanish']}  "
                             f"1-level {cost['one']}  2+ {cost['multi']}", size=8,
                             fill=S.DIM)
-                canvas.text(24, y + 52, f"max width delta {dw:.2f} px", size=8,
-                            fill=loud if dw >= 0.3 else S.DIM)
+                if splits is None:
+                    canvas.text(24, y + 52, f"max width delta {dw:.2f} px",
+                                size=8, fill=loud if dw >= 0.3 else S.DIM)
+                else:
+                    # how far the stroke's middle moves off the centerline
+                    shift = max(max(abs(pw * k * 0.5) for pw, k in
+                                    zip(profiles.to_polygon_widths(w), ks))
+                                for w, ks in zip(widths, splits))
+                    canvas.text(24, y + 52, f"max edge shift {shift:.2f} px",
+                                size=8, fill=loud if shift >= 0.3 else S.DIM)
             canvas.text(24, y + 64,
                         f"fill carries {100.0 * share:.0f}% of the arc at "
                         f"{PLOT_TIME[0]}:{PLOT_TIME[1]:02d}", size=8, fill=S.DIM)
-            plot(canvas, 24, y + 72, 262, 84, plot_arc, plot_pivot,
-                 widths[plot_col],
-                 None if r == baseline_row else base_widths[plot_col])
+            if splits is None:
+                plot(canvas, 24, y + 72, 262, 84, plot_arc, plot_pivot,
+                     widths[plot_col],
+                     None if r == baseline_row else base_widths[plot_col])
+            else:
+                plot_silhouette(canvas, 24, y + 72, 262, 84, plot_arc,
+                                plot_pivot, widths[plot_col], splits[plot_col])
             for col, (frame, cframe) in enumerate(zip(frames, base)):
                 ox = column_x(col)
                 W.panel(canvas, ox, y, size, cell_h, cframe, 0, zoom,
@@ -690,6 +764,39 @@ def exponent() -> int:
     return 0
 
 
+def centerline() -> int:
+    """Envelopes asymmetric about the centerline, on the current main.c."""
+    # The baseline row must be what main.c now draws, or every delta is off.
+    shipped_now = render_clock(profiles.quadratic, source=None)
+    identical = sum(a == f["buffer"] for a, f in
+                    zip(shipped_now, clock_frames(source=None)))
+    print(f"control: centred quadratic vs current main.c: {identical}/720 identical")
+    if identical != 720:
+        return 1
+    centred = profiles.Envelope([2.0, 5.0, 1.0], [0.0, 0.0, 0.0])
+    pts, tangents = [(0, 0), (5, 1), (9, 4)], [(1, 0), (0.8, 0.6), (0.6, 0.8)]
+    if polygon_split(pts, centred.widths, centred.split, tangents) != \
+            W.polygon_from(pts, centred.widths, tangents):
+        print("FAIL: a zero split is not the centred polygon")
+        return 1
+    track_sheets(
+        "profiles-centerline",
+        "Where the width sits: envelopes asymmetric about the centerline",
+        ["Every row has the quadratic's total width; only its share between the "
+         "two edges changes. k = 0 is centred, k = 1 puts one edge on the "
+         "centerline.",
+         "Outside of the bend: extra width on the outside of the turn, fading to "
+         "centred along the straight stems. Spine: the same side of travel all "
+         "the way. Screen: the heavier edge faces lower right.",
+         "Left of each row: both edges' distance from the centerline at 10:10 "
+         "(white), the centred stroke in orange, the pivot in blue. The minute "
+         "core stays on the centerline, where the hand points.",
+         "Closing columns are different hours, so heading varies with separation."],
+        profiles.CENTERLINE, baseline_row=0, source=None,
+        baseline_note="baseline: the quadratic as main.c now draws it")
+    return 0
+
+
 def kink() -> int:
     notes = [
         "Near overlap the centerline folds back on itself. At exact overlap it is a true "
@@ -721,7 +828,8 @@ def kink() -> int:
 def main(argv) -> int:
     which = argv[1] if len(argv) > 1 else "all"
     jobs = {"kink": kink, "price": price_thinning, "track2": track2,
-            "track3": track3, "quadratic": quadratic, "exponent": exponent}
+            "track3": track3, "quadratic": quadratic, "exponent": exponent,
+            "centerline": centerline}
     if which == "all":
         return max(job() for job in jobs.values())
     if which not in jobs:
