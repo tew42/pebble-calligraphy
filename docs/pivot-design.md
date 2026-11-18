@@ -1944,3 +1944,40 @@ where the 12 px control rows show the broadest pivots on any sheet.
 hour hand is the outlier: 4.8-4.9 px at the pivot against 6, and 248 px a frame.
 
 No profile is chosen here.
+
+## 50. The quadratic, chosen
+
+The width from the end of the hour swell to the minute point is to be the
+quadratic taper,
+
+    w = MINUTE_TIP_WIDTH + (HOUR_BODY_WIDTH - MINUTE_TIP_WIDTH) * (1 - u)^2
+
+with u running 0 at the end of the swell to 1 at the minute point. It has no
+control value and does not know where the pivot is; the width it puts there is
+an outcome of the geometry. Evidence: section 48 (within 0.65 px of the
+two-smoothstep profile at the shipped geometry) and section 49 (2.61-3.29 px at
+the pivot across hand lengths, and progressively below half the body as the
+hour hand thickens, to 5.3-5.5 px at 12 px).
+
+It is not in `main.c` yet. Three decisions come first, because every sheet the
+quadratic was judged on was drawn with two mechanisms switched off:
+
+1. **Thinning.** Delete the near-overlap waist term, or keep a version of it.
+   Removing it changed 13 of 720 minutes and only added ink (section 47).
+   Keeping it needs a new rule, since today it thins `MIDDLE_WIDTH`, which the
+   quadratic does not have.
+2. **Pressure.** Delete `PRESSURE_VARIATION`, or keep it. It moves the width by
+   at most 0.13 px, under what a drawing resolves (section 48).
+3. **Swell length.** 5% of the hour side as shipped, an absolute 2.5 px, or a
+   fraction of the body (5/12). Outside the taper, so it can land on its own.
+
+Unblocked once the profile is in: the hour swell's sampling (two samples carry
+3 to 6 px; the quadratic is steepest right after the swell, which is where the
+hour stem's samples belong), and pinning the earlier studies to `main.c` as of
+`124c0b0` so they stay reproducible once the code they studied has changed.
+
+Still deferred: width customization up to 2x, the cusp near a 41.5 degree
+separation at doubled widths, emery-to-gabbro scaling, the stem-ratio constraint
+for a settings page, the emulator regression fixture (the captures need
+re-uploading), and moving the `main.c` commits to a master-bound branch without
+the Python.
