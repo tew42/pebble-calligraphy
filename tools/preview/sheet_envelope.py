@@ -45,6 +45,35 @@ import svgcanvas as S
 
 MAIN_C = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                       "..", "..", "src", "c", "main.c")
+
+#: The last main.c with the waist term, the pressure multiplier and
+#: MIDDLE_WIDTH. Every study of those mechanisms builds against it, so they stay
+#: reproducible now that the code they studied is gone.
+LEGACY = "124c0b0"
+_revisions = {}
+
+
+def main_c_at(revision):
+    """main.c as it was at `revision`, read from git rather than the worktree."""
+    if revision not in _revisions:
+        _revisions[revision] = subprocess.run(
+            ["git", "show", f"{revision}:src/c/main.c"],
+            cwd=os.path.dirname(MAIN_C), capture_output=True, text=True,
+            check=True).stdout
+    return _revisions[revision]
+
+# Drivers call build_stroke_polygon through these, so one driver serves both the
+# current main.c and the legacy one, whose polygon also takes the waist opening.
+# A build with no waist reports an opening of 1, which is what it draws.
+WAIST_MACROS = r"""
+#if HAS_WAIST
+#define RESULT_WAIST(r) ((r).waist_opening)
+#define BUILD_STROKE_POLYGON(r) build_stroke_polygon((r).pivot_index, (r).waist_opening)
+#else
+#define RESULT_WAIST(r) 1.0f
+#define BUILD_STROKE_POLYGON(r) build_stroke_polygon((r).pivot_index)
+#endif
+"""
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 
 TIMES = ((12, 0), (12, 1), (12, 2), (12, 3), (12, 4),
@@ -98,9 +127,9 @@ int main(void) {
     printf("T %d %d %u %.6f %.6f\n",
            hour, minute, r.pivot_index,
            s_cumulative_length[CENTERLINE_POINT_COUNT - 1],
-           r.waist_opening);
+           RESULT_WAIST(r));
 
-    build_stroke_polygon(r.pivot_index, r.waist_opening);
+    BUILD_STROKE_POLYGON(r);
     for (int i = 0; i < POLYGON_POINT_COUNT; ++i) {
       printf("P %d %d %d\n", i, s_polygon_points[i].x, s_polygon_points[i].y);
     }
@@ -111,7 +140,8 @@ int main(void) {
 
 
 def build(directory, overrides=None, patches=None, stub=None, driver=None,
-          name="envelope", cflags=(), sources=(), ldflags=("-lm",)):
+          name="envelope", cflags=(), sources=(), ldflags=("-lm",),
+          source=None):
     """Extract the geometry half of main.c, optionally altered, and compile it.
 
     `stub` and `driver` default to the ones above, which fake just enough of
@@ -132,8 +162,11 @@ def build(directory, overrides=None, patches=None, stub=None, driver=None,
 
     `main.c` is never written to; reverting an experiment is deleting a
     dictionary entry.
+
+    `source` replaces the working-tree main.c, typically with
+    `main_c_at(LEGACY)` for a study of mechanisms the current code no longer has.
     """
-    source = open(MAIN_C).read()
+    source = open(MAIN_C).read() if source is None else source
     cut = source.index("/* ------------------------------------------------"
                        "------------------------- */\n/* Geometry cache")
     body = source[:cut].replace("#include <pebble.h>", "", 1)
@@ -166,7 +199,9 @@ def build(directory, overrides=None, patches=None, stub=None, driver=None,
         body = body.replace(old, new)
 
     path = os.path.join(directory, name + ".c")
-    open(path, "w").write((STUB if stub is None else stub) + body
+    prefix = (f"#define HAS_WAIST {int('waist_opening' in body)}\n"
+              + WAIST_MACROS)
+    open(path, "w").write(prefix + (STUB if stub is None else stub) + body
                           + (DRIVER if driver is None else driver))
     binary = os.path.join(directory, name)
     subprocess.run(["gcc", "-std=gnu11", "-O2", "-w", *cflags, "-o", binary,
@@ -174,9 +209,9 @@ def build(directory, overrides=None, patches=None, stub=None, driver=None,
     return binary
 
 
-def gather(times=None, overrides=None, patches=None):
+def gather(times=None, overrides=None, patches=None, source=None):
     with tempfile.TemporaryDirectory() as directory:
-        binary = build(directory, overrides, patches)
+        binary = build(directory, overrides, patches, source=source)
         payload = "\n".join(f"{h} {m}" for h, m in (times or TIMES)) + "\n"
         result = subprocess.run([binary], input=payload, capture_output=True,
                                 text=True, check=True)
@@ -279,7 +314,8 @@ def panel(canvas, ox, oy, size, frame, index, zoom):
 
 
 def sheet(path, zoom, title, size=176):
-    frames = gather()
+    # a study of the waist term (cw below), so it builds the code that had one
+    frames = gather(source=main_c_at(LEGACY))
     gap, left, top = 8, 24, 128
     columns = 5
     rows = (len(frames) + columns - 1) // columns

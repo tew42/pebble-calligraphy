@@ -93,8 +93,7 @@ int main(int argc, char **argv) {
             minute_to_pebble_angle(minute)
           );
         build_stroke_polygon(
-          result.pivot_index,
-          result.waist_opening
+          result.pivot_index
         );
         checksum +=
           s_polygon_points[10].x +

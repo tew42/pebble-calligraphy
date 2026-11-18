@@ -2038,3 +2038,37 @@ What the numbers say:
   for very little.
 
 No exponent or shape is chosen here.
+
+## 52. The quadratic in main.c
+
+`calculate_stroke_width` now keeps the hour swell as it was (3 to 6 px over the
+first 5% of the hour side) and then returns
+
+    MINUTE_TIP_WIDTH + (HOUR_BODY_WIDTH - MINUTE_TIP_WIDTH) * remaining^2
+
+with `remaining` running 1 at the end of the swell to 0 at the minute tip. The
+exponent is fixed at 2. Asymmetry along the length (section 51's skews and
+pivot splits) was rejected as a parameter with nothing to show for it.
+
+Deleted with it: `MIDDLE_WIDTH`, `MINIMUM_STROKE_WIDTH` (its only user was the
+waist interpolation), `PRESSURE_VARIATION` and the pressure multiplier, the
+`stem_separation` term, and the `PivotResult` struct added in section 46 only to
+carry the waist out of `calculate_pivot_point`, which returns a `Vec2` again.
+The pivot rule itself is untouched and `check_c_pivot.py` still holds it to the
+model within 3.2e-4 px.
+
+Against the previous build, over all 720 minutes: 49,595 px change, 69 a
+frame, almost all of it ink removed (25,991 pixels lost, 772 gained, the rest
+grey-level shifts). That is the quadratic's thinner minute half, the fill
+carrying 56% of the arc at 10:10 against 68% before. Rebuild cost is unchanged
+in what `check_c_build.py` counts (202 square roots, 606 divisions inside them):
+the deleted terms were multiplications.
+
+`profiles.check_current()` holds the current `main.c` to `profiles.quadratic`:
+widths within 1.0e-6 px and the drawing pixel-identical on 720 of 720 minutes.
+
+**The earlier studies are pinned to the code they studied.** Everything that
+examines the waist, pressure or the two-smoothstep profile builds `main.c` as of
+`124c0b0` (`sheet_envelope.main_c_at(LEGACY)`), and the drivers compile against
+either version. All eighteen `profiles-*` sheets regenerate byte-identical from
+the pinned source.

@@ -33,7 +33,12 @@ import raster
 import svgcanvas as S
 from sheet_envelope import OUT, separation
 
-gather = raster.gather
+def gather(*args, **kwargs):
+    """raster.gather against the legacy main.c: every patch and override here
+    is written against the waist, pressure and two-smoothstep code."""
+    import sheet_envelope
+    kwargs.setdefault("source", sheet_envelope.main_c_at(sheet_envelope.LEGACY))
+    return raster.gather(*args, **kwargs)
 
 CENTRE = (100.0, 114.0)
 

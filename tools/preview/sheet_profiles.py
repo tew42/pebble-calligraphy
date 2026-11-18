@@ -60,10 +60,15 @@ CLOSING_TIMES = ((12, 0), (7, 38), (10, 55), (9, 50), (12, 2))
 PLOT_TIME = (10, 10)
 
 
-def build(times, variants):
-    """Render every (variant, time) cell and return frames plus diagnostics."""
-    base = raster.gather(times=list(times))
-    dense = raster.gather(times=list(times), overrides=profiles.DENSE)
+def build(times, variants, source=profiles.LEGACY_SOURCE):
+    """Render every (variant, time) cell and return frames plus diagnostics.
+
+    `source` is the main.c the centerlines come from: the legacy one by default,
+    which the tracks were drawn against; None for the current one.
+    """
+    base = raster.gather(times=list(times), source=source)
+    dense = raster.gather(times=list(times), overrides=profiles.DENSE,
+                          source=source)
     rows = []
     for label, fn in variants:
         specs, widths = [], []
@@ -156,22 +161,24 @@ CLOCK = [(h, m) for h in range(12) for m in range(60)]
 _clock_frames = (None, None)
 
 
-def clock_frames(overrides=None):
+def clock_frames(overrides=None, source=profiles.LEGACY_SOURCE):
     """Every minute of the clock from main.c, optionally with constants changed.
 
     Only the last configuration is kept: a clock of framebuffers is 33 MB.
     """
     global _clock_frames
-    key = tuple(sorted((overrides or {}).items()))
+    key = (source is None, tuple(sorted((overrides or {}).items())))
     if _clock_frames[0] != key:
-        _clock_frames = (key, raster.gather(times=CLOCK, overrides=overrides))
+        _clock_frames = (key, raster.gather(times=CLOCK, overrides=overrides,
+                                            source=source))
     return _clock_frames[1]
 
 
-def render_clock(fn, overrides=None, widths=profiles.SHIPPED_WIDTHS):
+def render_clock(fn, overrides=None, widths=profiles.SHIPPED_WIDTHS,
+                 source=profiles.LEGACY_SOURCE):
     """Every minute of the clock under one profile, as framebuffers."""
     specs = []
-    for frame in clock_frames(overrides):
+    for frame in clock_frames(overrides, source):
         ctx = profiles.context_from(
             frame, profiles.separation_degrees(frame["hour"], frame["minute"]),
             widths)

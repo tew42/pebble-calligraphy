@@ -32,6 +32,12 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import raster
+import sheet_envelope
+
+#: `shipped` below transcribes main.c as it was before the quadratic replaced
+#: its width code, and every study here compares against that code, so they all
+#: build it. The current main.c is checked separately, against `quadratic`.
+LEGACY_SOURCE = sheet_envelope.main_c_at(sheet_envelope.LEGACY)
 
 # --- the constants the profile runs between, read from main.c ---------------
 
@@ -39,14 +45,14 @@ MAIN_C = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                       "..", "..", "src", "c", "main.c")
 
 
-def constants():
-    """The width-related #defines, so this file cannot drift from the C."""
+#: Constants both versions of main.c have; they must still agree, or the
+#: studies of the legacy code no longer describe the current one.
+SHARED = ("HOUR_TIP_WIDTH", "HOUR_BODY_WIDTH", "MINUTE_TIP_WIDTH",
+          "HOUR_SWELL_POSITION", "OUTLINE_WIDTH_COMPENSATION", "VECTOR_EPSILON")
+
+
+def read_defines(source, wanted):
     import re
-    source = open(MAIN_C).read()
-    wanted = ("HOUR_TIP_WIDTH", "HOUR_BODY_WIDTH", "MIDDLE_WIDTH",
-              "MINUTE_TIP_WIDTH", "MINIMUM_STROKE_WIDTH", "HOUR_SWELL_POSITION",
-              "PRESSURE_VARIATION", "OUTLINE_WIDTH_COMPENSATION",
-              "VECTOR_EPSILON")
     out = {}
     for name in wanted:
         match = re.search(r"^#define[ \t]+" + name + r"[ \t]+([0-9.]+)f?\s*$",
@@ -54,6 +60,21 @@ def constants():
         if not match:
             raise SystemExit(f"could not read #define {name} from main.c")
         out[name] = float(match.group(1))
+    return out
+
+
+def constants():
+    """The width-related #defines, so this file cannot drift from the C.
+
+    Read from the legacy main.c, which is the only one that still has
+    MIDDLE_WIDTH, MINIMUM_STROKE_WIDTH and PRESSURE_VARIATION.
+    """
+    out = read_defines(LEGACY_SOURCE, SHARED + (
+        "MIDDLE_WIDTH", "MINIMUM_STROKE_WIDTH", "PRESSURE_VARIATION"))
+    current = read_defines(open(MAIN_C).read(), SHARED)
+    for name in SHARED:
+        if current[name] != out[name]:
+            raise SystemExit(f"{name} differs between main.c and {sheet_envelope.LEGACY}")
     return out
 
 
@@ -215,7 +236,8 @@ def check(times=None, verbose=True, overrides=None, widths=SHIPPED_WIDTHS):
     main.c compiled with other constants.
     """
     times = times or [(h, m) for h in range(12) for m in range(60)]
-    frames = raster.gather(times=times, want_frames=False, overrides=overrides)
+    frames = raster.gather(times=times, want_frames=False, overrides=overrides,
+                           source=LEGACY_SOURCE)
     worst = 0.0
     worst_at = None
     for frame in frames:
@@ -662,7 +684,7 @@ ASYMMETRIC = (
 def check_families(times=None, verbose=True):
     """The new families must reduce to the shipped maths where they claim to."""
     times = times or [(h, m) for h in range(12) for m in range(0, 60, 7)]
-    frames = raster.gather(times=times, want_frames=False)
+    frames = raster.gather(times=times, want_frames=False, source=LEGACY_SOURCE)
     worst_baseline = worst_pressured = worst_skew = worst_split = 0.0
     skew_unit = from_shape(skewed(1.0, 2.0))
     for frame in frames:
@@ -694,11 +716,42 @@ def check_families(times=None, verbose=True):
     return max(worst_baseline, worst_pressured, worst_skew, worst_split)
 
 
+def check_current(verbose=True):
+    """The current main.c must draw exactly `quadratic`: widths and pixels.
+
+    Returns (worst width disagreement, minutes rendered identically).
+    """
+    import sheet_workshop as W
+    times = [(h, m) for h in range(12) for m in range(60)]
+    frames = raster.gather(times=times)
+    worst, specs = 0.0, []
+    for frame in frames:
+        ctx = context_from(frame, separation_degrees(frame["hour"], frame["minute"]))
+        mine = to_polygon_widths(quadratic(ctx))
+        theirs = [row[3] for row in frame["centerline"]]
+        worst = max(worst, max(abs(a - b) for a, b in zip(mine, theirs)))
+        points = [(x, y) for x, y, *_ in frame["centerline"]]
+        specs.append((W.polygon_from(points, mine, W.bisector_tangents(points)),
+                      points[frame["pivot"]:]))
+    identical = sum(a["buffer"] == b["buffer"] for a, b in
+                    zip(raster.render_polygons(specs), frames))
+    if verbose:
+        print(f"current main.c vs `quadratic`, {len(frames)} frames")
+        print(f"  worst width disagreement: {worst:.3e} px")
+        print(f"  pixel-identical frames:   {identical}/{len(frames)}")
+    return worst, identical
+
+
 def main() -> int:
+    print("legacy main.c (" + sheet_envelope.LEGACY + ") vs `shipped`:")
     worst = check()
     # float32 in the C against float64 here, over widths of order 6 px
     if worst > 1e-4:
         print("FAIL: the reimplementation does not match the C")
+        return 1
+    worst, identical = check_current()
+    if worst > 1e-4 or identical != 720:
+        print("FAIL: the current main.c does not draw `quadratic`")
         return 1
     if check_families() > 1e-9:
         print("FAIL: a family does not reduce to the shipped profile")

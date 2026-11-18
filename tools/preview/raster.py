@@ -146,7 +146,7 @@ int main(int argc, char **argv) {
       hour_to_pebble_angle(hour, minute),
       minute_to_pebble_angle(minute));
     update_cumulative_lengths();
-    build_stroke_polygon(r.pivot_index, r.waist_opening);
+    BUILD_STROKE_POLYGON(r);
 
     int core_count = 0;
     if (r.pivot_index < CENTERLINE_POINT_COUNT) {
@@ -173,7 +173,7 @@ int main(int argc, char **argv) {
     printf("T %d %d %u %.6f %.6f %d %d %d %d %d %lu\n",
            hour, minute, r.pivot_index,
            s_cumulative_length[CENTERLINE_POINT_COUNT - 1],
-           r.waist_opening,
+           RESULT_WAIST(r),
            level[0], level[1], level[2], level[3], other, hash);
 
     for (int i = 0; i < POLYGON_POINT_COUNT; ++i) {
@@ -241,7 +241,7 @@ def render_polygons(specs, board="emery"):
 
 
 def gather(times=None, overrides=None, patches=None, board="emery",
-           want_frames=True, extra_cflags=(), trig="firmware"):
+           want_frames=True, extra_cflags=(), trig="firmware", source=None):
     """Render each time and return frames with their framebuffers.
 
     Each frame is a dict with the same `hour`/`minute`/`pivot`/`scale` keys the
@@ -255,7 +255,7 @@ def gather(times=None, overrides=None, patches=None, board="emery",
             directory, overrides, patches,
             stub=STUB, driver=DRIVER, name="raster",
             cflags=cflags(board) + list(extra_cflags),
-            sources=sources(trig))
+            sources=sources(trig), source=source)
         frame_path = os.path.join(directory, "frames.bin") if want_frames else None
         payload = "\n".join(f"{h} {m}" for h, m in times) + "\n"
         result = subprocess.run(

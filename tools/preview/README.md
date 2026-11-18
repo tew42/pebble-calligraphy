@@ -109,6 +109,10 @@ triangle A-B-centre.
   shown both at a moderate stem size and at the largest that fits inside the
   hands -- the case a ratio budget has to survive.
 - `shot.sh` -- rasterize named sheets to PNG so they can be looked at.
+- **Legacy pin.** The waist term, the pressure multiplier and `MIDDLE_WIDTH`
+  are gone from `main.c`. Every study of them builds `main.c` as of `124c0b0`
+  instead, through `sheet_envelope.main_c_at(LEGACY)` and the `source` argument
+  of `sheet_envelope.build` / `raster.gather`, so those sheets still reproduce.
 - `profiles.py` -- the stroke width as one curve w(s), a width per centerline
   sample, so a profile is a value rather than a patch to `main.c`.  `shipped`
   reproduces `calculate_stroke_width` and is checked against the compiled C on
