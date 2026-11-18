@@ -119,6 +119,7 @@ triangle A-B-centre.
   and prices every row over all 720 minutes (`price` does the thinning alone).
   `quadratic` re-runs one profile against `main.c` compiled with other hand
   lengths and hour thicknesses, each checked pixel-identical to the C first.
+  `exponent` sweeps the quadratic's exponent and two asymmetric variants of it.
 - `check_c_pivot.py` -- the one script here that tests the *watchface* rather
   than a model of it: it lifts `calculate_pivot_point` and its vector helpers
   verbatim out of `src/c/main.c`, compiles them, and compares the result against

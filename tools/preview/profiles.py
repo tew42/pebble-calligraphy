@@ -494,6 +494,34 @@ baseline = from_shape(BASELINE_SHAPE, "baseline")
 quadratic = from_shape(power(2.0), "quadratic")
 
 
+def skewed(a, b):
+    """w = tip + (peak - tip)(1 - u^a)^b: the quadratic, skewed along the stroke.
+
+    a = 1, b = 2 is the quadratic itself. a > 1 holds the width longer and then
+    drops it; a < 1 drops early and trails. Like the quadratic it never looks at
+    the pivot.
+    """
+    def shape(u, u_pivot, span, k):
+        return k.tip + (k.peak - k.tip) * (1.0 - u ** a) ** b
+    return shape
+
+
+def split_at_pivot(a, b):
+    """A different fall either side of the pivot, meeting at the quadratic's own
+    pivot width, so nothing new is pinned there.
+
+    Hour side: w_p + (peak - w_p)(1 - s)^a over s = u / u_pivot.
+    Minute side: tip + (w_p - tip)(1 - t)^b over t from the pivot to the point.
+    """
+    def shape(u, u_pivot, span, k):
+        w_p = k.tip + (k.peak - k.tip) * (1.0 - u_pivot) ** 2
+        if u <= u_pivot:
+            return w_p + (k.peak - w_p) * (1.0 - u / u_pivot) ** a
+        t = (u - u_pivot) / (1.0 - u_pivot)
+        return k.tip + (w_p - k.tip) * (1.0 - t) ** b
+    return shape
+
+
 def reference(ctx, dense=None):
     """The watchface as drawn today: waist term and pressure both on."""
     return shipped(ctx)
@@ -608,12 +636,35 @@ TRACK3 = (
     ("hour holds, minute falls fast", from_shape(split_power(0.5, 2.5))),
 )
 
+#: Every exponent here is a multiple of 0.5: on the watch that is products and at
+#: most one square_root_float, where an arbitrary one would need powf.
+EXPONENT = (
+    ("shipped, as drawn today", reference),
+    ("quadratic, p = 2", quadratic),
+    ("p = 1.5 (lifts later)", from_shape(power(1.5))),
+    ("p = 2.5 (lifts sooner)", from_shape(power(2.5))),
+    ("p = 3", from_shape(power(3.0))),
+)
+
+ASYMMETRIC = (
+    ("shipped, as drawn today", reference),
+    ("quadratic, p = 2", quadratic),
+    ("skew a = 0.5: drops early, long trail", from_shape(skewed(0.5, 2.0))),
+    ("skew a = 1.5: holds, then drops", from_shape(skewed(1.5, 2.0))),
+    ("skew a = 2: holds longer", from_shape(skewed(2.0, 2.0))),
+    ("pivot split 2 / 1.5: eases in, minute heavier",
+     from_shape(split_at_pivot(2.0, 1.5))),
+    ("pivot split 1 / 3: straight in, minute lifts fast",
+     from_shape(split_at_pivot(1.0, 3.0))),
+)
+
 
 def check_families(times=None, verbose=True):
     """The new families must reduce to the shipped maths where they claim to."""
     times = times or [(h, m) for h in range(12) for m in range(0, 60, 7)]
     frames = raster.gather(times=times, want_frames=False)
-    worst_baseline = worst_pressured = 0.0
+    worst_baseline = worst_pressured = worst_skew = worst_split = 0.0
+    skew_unit = from_shape(skewed(1.0, 2.0))
     for frame in frames:
         ctx = context_from(frame, separation_degrees(frame["hour"], frame["minute"]))
         bare = _base(ctx, 1.0, 0.0)
@@ -622,13 +673,25 @@ def check_families(times=None, verbose=True):
         worst_pressured = max(worst_pressured, max(
             abs(a - b) for a, b in
             zip(pressured(K["PRESSURE_VARIATION"])(ctx), no_thinning(ctx))))
+        worst_skew = max(worst_skew, max(
+            abs(a - b) for a, b in zip(skew_unit(ctx), quadratic(ctx))))
+        _, span, u_pivot = domain(ctx)
+        for a, b in ((2.0, 1.5), (1.0, 3.0)):
+            shape = split_at_pivot(a, b)
+            worst_split = max(worst_split, abs(
+                shape(u_pivot, u_pivot, span, ctx.widths)
+                - shape(u_pivot + 1e-12, u_pivot, span, ctx.widths)))
     if verbose:
         print(f"families vs the shipped maths, {len(frames)} frames")
         print(f"  baseline vs shipped with waist open, pressure off: "
               f"{worst_baseline:.3e} px")
         print(f"  pressured(0.20) vs shipped with waist open:        "
               f"{worst_pressured:.3e} px")
-    return max(worst_baseline, worst_pressured)
+        print(f"  skewed(1, 2) vs quadratic:                         "
+              f"{worst_skew:.3e} px")
+        print(f"  split_at_pivot, jump across the pivot:             "
+              f"{worst_split:.3e} px")
+    return max(worst_baseline, worst_pressured, worst_skew, worst_split)
 
 
 def main() -> int:

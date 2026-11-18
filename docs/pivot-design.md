@@ -1981,3 +1981,60 @@ separation at doubled widths, emery-to-gabbro scaling, the stem-ratio constraint
 for a settings page, the emulator regression fixture (the captures need
 re-uploading), and moving the `main.c` commits to a master-bound branch without
 the Python.
+
+## 51. Thinning and pressure deleted; the exponent and asymmetry swept
+
+**Thinning goes.** With the quadratic the pivot width is an outcome of the
+geometry, 2.9 px at the shipped settings, and the hands-closing columns on every
+sheet since section 48 show no broad pivot without it.
+
+**Pressure goes, for a reason beyond its size.** The term is
+`w *= 1 + 0.20 * 4p(1-p) * (p_pivot - p)`: heavier before the pivot, lighter
+after, zero at both tips. Its lobes are lopsided because the bell is centred on
+the stroke, not the pivot -- about +2.4% partway up the hour side and -5.6%
+three quarters of the way out the minute hand. That it is too small to draw
+(section 48) is the lesser point. The larger one is that a heavier-before,
+lighter-after multiplier on a profile that already falls from heavy to light
+only steepens that fall; it adds no feature, which is why amplifying it in
+section 45 only thickened the stroke. With the quadratic the same intent has one
+control, the exponent. The only "pressure" a width-along-the-stroke profile
+cannot express is direction -- pointed-pen downstroke weight, or a broad nib's
+angle -- which would be a new mechanism, not this term.
+
+Sheets: `profiles-exponent` and `profiles-asymmetric`, each `-face` and
+`-zoom`, every row priced against the quadratic over 720 minutes. Every
+exponent is a multiple of 0.5, which on the watch is products and at most one
+`square_root_float`; an arbitrary exponent would need `powf`.
+
+| profile | width at pivot | px/frame vs quadratic | fill at 10:10 |
+| --- | --- | --- | --- |
+| quadratic, p = 2 | 2.87-2.98 | -- | 56% |
+| p = 1.5 | 3.40-3.49 | 82, all ink added | 66% |
+| p = 2.5 | 2.47-2.57 | 61, all ink removed | 49% |
+| p = 3 | 2.15-2.24 | 100, all ink removed | 43% |
+| skew a = 0.5 | 1.71-1.76 | 174 | 32% |
+| skew a = 1.5 | 3.88-4.00 | 138 | 68% |
+| skew a = 2 | 4.61-4.72 | 208 | 75% |
+| pivot split 2 / 1.5 | 2.87-2.98 | 61 | 61% |
+| pivot split 1 / 3 | 2.87-2.98 | 36 | 51% |
+
+The skew is `w = tip + (peak - tip)(1 - u^a)^2`, which is the quadratic at
+a = 1 and, like it, never looks at the pivot. The pivot split is a different
+fall either side of the pivot, meeting at the quadratic's own pivot width.
+
+What the numbers say:
+
+- **The exponent is a clean, monotone control.** Each half step moves the pivot
+  by about 0.4-0.5 px and moves ink in one direction only. 1.5 and 2.5 are the
+  nearest alternatives and both are plainly different drawings.
+- **The skew is a much bigger lever than the exponent.** a = 1.5 already puts
+  4 px at the pivot, heavier than anything shipped; a = 0.5 drops to 1.7 px and
+  leaves the fill on only a third of the minute hand. Neither end needs the pivot,
+  but neither is a small adjustment.
+- **The pivot split barely registers.** Pinning the pivot width to the
+  quadratic's leaves little room either side: 1 / 3 departs by at most 0.29 px,
+  under the drawing floor. 2 / 1.5 is visible (0.59 px), mostly as a flatter
+  shoulder into the pivot. It costs the quadratic's independence from the pivot
+  for very little.
+
+No exponent or shape is chosen here.

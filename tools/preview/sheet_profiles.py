@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Width-profile studies, drawn by the firmware's own rasterizer.
 
-    python3 tools/preview/sheet_profiles.py [kink|price|track2|track3|quadratic|all]
+    python3 tools/preview/sheet_profiles.py [kink|price|track2|track3|quadratic|exponent|all]
     ./shot.sh profiles-track2-control-face ...
 
 Everything is rendered through `raster.render_polygons`, so a profile built in
@@ -14,6 +14,7 @@ shipped profile reproduces the compiled C to 1.4e-6 px over all 720 minutes.
   track2  symmetric / monotonic profiles, on a no-thinning baseline
   track3  asymmetric / non-monotonic profiles, same baseline
   quadratic  the quadratic taper at other hand lengths and hour thicknesses
+  exponent   the quadratic's exponent swept, and asymmetric variants of it
 """
 from __future__ import annotations
 
@@ -654,6 +655,34 @@ def quadratic() -> int:
     return 0
 
 
+EXPONENT_NOTES = [
+    "Baseline for every delta: the quadratic taper, w = tip + (peak - tip)(1 - u)^p "
+    "with p = 2, thinning and pressure off.",
+    "Left of each row: requested stroke width against arc at 10:10 (white), the "
+    "quadratic in orange, the pivot in blue. Under the dashed line the filled "
+    "polygon is below 1 px and only the outline and core draw.",
+    "Only ~10 distinct widths survive vertex rounding, so rows within ~0.3 px of "
+    "each other are the same drawing. Closing columns are different hours, so "
+    "heading varies with separation.",
+]
+
+
+def exponent() -> int:
+    track_sheets(
+        "profiles-exponent",
+        "The quadratic's exponent: how quickly the pen lifts",
+        ["w = tip + (peak - tip)(1 - u)^p from the end of the hour swell (u = 0) "
+         "to the minute point (u = 1). Shipped geometry, 6 px body."]
+        + EXPONENT_NOTES, profiles.EXPONENT)
+    track_sheets(
+        "profiles-asymmetric",
+        "Asymmetric variants of the quadratic",
+        ["Skew: w = tip + (peak - tip)(1 - u^a)^2, never looking at the pivot. "
+         "Pivot split: a different fall either side, meeting at the quadratic's "
+         "own pivot width."] + EXPONENT_NOTES, profiles.ASYMMETRIC)
+    return 0
+
+
 def kink() -> int:
     notes = [
         "Near overlap the centerline folds back on itself. At exact overlap it is a true "
@@ -685,7 +714,7 @@ def kink() -> int:
 def main(argv) -> int:
     which = argv[1] if len(argv) > 1 else "all"
     jobs = {"kink": kink, "price": price_thinning, "track2": track2,
-            "track3": track3, "quadratic": quadratic}
+            "track3": track3, "quadratic": quadratic, "exponent": exponent}
     if which == "all":
         return max(job() for job in jobs.values())
     if which not in jobs:
