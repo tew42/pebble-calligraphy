@@ -114,8 +114,11 @@ triangle A-B-centre.
   reproduces `calculate_stroke_width` and is checked against the compiled C on
   every minute; the track families are all expressed against it.
 - `sheet_profiles.py` -- renders those profiles through the firmware rasterizer
-  (`kink`, `track2`, `track3`), each as a whole-face sheet at 1:1 and a 4x crop,
+  (`kink`, `track2`, `track3`, `quadratic`), each as a whole-face sheet at 1:1
+  and a 4x crop,
   and prices every row over all 720 minutes (`price` does the thinning alone).
+  `quadratic` re-runs one profile against `main.c` compiled with other hand
+  lengths and hour thicknesses, each checked pixel-identical to the C first.
 - `check_c_pivot.py` -- the one script here that tests the *watchface* rather
   than a model of it: it lifts `calculate_pivot_point` and its vector helpers
   verbatim out of `src/c/main.c`, compiles them, and compares the result against

@@ -1890,3 +1890,57 @@ is plainly visible, but on an axis-aligned stroke (06:00, 12:00) it draws as a
 rectangular step rather than a swell, because both edges round together.
 
 No profile is chosen here.
+
+## 49. The quadratic taper away from the shipped geometry
+
+On the track 2 sheets the quadratic, `w = tip + (peak - tip)(1 - u)^2`, landed
+2.87-2.98 px at the pivot and stayed within 0.65 px of the shipped profile with
+no control value and no knowledge of where the pivot is. That rested on two
+coincidences of the shipped geometry: the pivot sits at 0.37-0.39 of the
+profile's arc, and `1 + 5(1 - 0.38)^2` is about 3. Changing the hand lengths
+moves the first, and changing the thickness moves the second.
+
+Sheets: `profiles-quadratic-lengths`, `-thickness` and `-corners`, each as
+`-face` and `-zoom`. Every setting is `main.c` compiled with the constants
+overridden; the Python profile must reproduce it on all 720 minutes or the
+setting is not drawn, and all fifteen pass. The hour end scales with the body
+(tip = body / 2, and the widening takes 5% of the hour side per 6 px of body);
+the control-value row uses `MIDDLE_WIDTH` = body / 2. Thinning and pressure are
+off.
+
+| setting | pivot in arc | quadratic at pivot | control | px/frame |
+| --- | --- | --- | --- | --- |
+| 0.60/0.90, 6 px (shipped) | 0.371-0.388 | 2.87-2.98 | 3 | 70 |
+| 0.50/0.90 short hour | 0.323-0.345 | 3.14-3.29 | 3 | 61 |
+| 0.70/0.90 long hour | 0.414-0.425 | 2.65-2.71 | 3 | 99 |
+| 0.60/0.75 short minute | 0.423-0.432 | 2.61-2.67 | 3 | 83 |
+| 0.50/0.75 both smaller | 0.371-0.388 | 2.87-2.98 | 3 | 56 |
+| 0.55/0.95 most contrast | 0.334-0.355 | 3.08-3.22 | 3 | 66 |
+| body 4 | 0.375-0.392 | 2.11-2.17 | 2 | 35 |
+| body 8 | 0.367-0.384 | 3.66-3.81 | 4 | 114 |
+| body 10 | 0.363-0.379 | 4.47-4.66 | 5 | 151 |
+| body 12 | 0.358-0.375 | 5.30-5.53 | 6 | 193 |
+| 12 px, short hour | 0.311-0.333 | 5.89-6.22 | 6 | 150 |
+| 12 px, long hour | 0.401-0.412 | 4.81-4.94 | 6 | 248 |
+| 4 px, short minute | 0.427-0.436 | 1.95-1.99 | 2 | 35 |
+| 12 px, most contrast | 0.322-0.343 | 5.75-6.06 | 6 | 160 |
+
+**The pivot's place depends on proportion, not size.** 0.50/0.75 is the shipped
+proportion scaled down and lands on exactly the shipped 0.371-0.388. Across the
+length settings it moves 0.32-0.43, which moves the quadratic's pivot width over
+2.61-3.29 px at a 6 px body: about 0.7 px of range, above the ~0.3 px a drawing
+resolves, so visible but modest. A longer hour hand or a shorter minute hand
+gives a lighter pivot; the reverse, a heavier one.
+
+**With thickness the quadratic falls progressively below body / 2**, because the
+minute tip stays 1 px while the peak grows: about +0.1 px at 4 px, -0.3 at 8,
+-0.5 at 10, -0.6 at 12. Above 6 px every change against the control is ink
+removed (appearing pixels near zero). That is the direction the thinning was
+meant to push, so at thick settings the quadratic does part of the waist term's
+job on its own. Whether it does enough is read from the hands-closing columns,
+where the 12 px control rows show the broadest pivots on any sheet.
+
+**The corners compound as the two separate effects predict.** Thick with a long
+hour hand is the outlier: 4.8-4.9 px at the pivot against 6, and 248 px a frame.
+
+No profile is chosen here.

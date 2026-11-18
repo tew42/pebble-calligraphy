@@ -60,6 +60,46 @@ def constants():
 K = constants()
 
 
+# --- the widths a profile runs between --------------------------------------
+
+@dataclass(frozen=True)
+class Widths:
+    """The width constants of one configuration, as main.c names them.
+
+    Defaults to what main.c ships. A different record stands for main.c compiled
+    with those constants overridden, and `overrides()` is exactly that set of
+    overrides, so a profile and the C it is checked against cannot disagree
+    about which configuration they are.
+    """
+    hour_tip: float = K["HOUR_TIP_WIDTH"]
+    peak: float = K["HOUR_BODY_WIDTH"]
+    mid: float = K["MIDDLE_WIDTH"]
+    tip: float = K["MINUTE_TIP_WIDTH"]
+    swell: float = K["HOUR_SWELL_POSITION"]
+
+    @classmethod
+    def for_body(cls, body):
+        """The hour end scaled with the body: same shape at every thickness.
+
+        Tip and control value stay at half the body, and the widening keeps its
+        length in proportion to the width it has to reach.
+        """
+        scale = body / K["HOUR_BODY_WIDTH"]
+        return cls(hour_tip=K["HOUR_TIP_WIDTH"] * scale, peak=body,
+                   mid=K["MIDDLE_WIDTH"] * scale,
+                   swell=K["HOUR_SWELL_POSITION"] * scale)
+
+    def overrides(self):
+        return {"HOUR_TIP_WIDTH": f"{self.hour_tip!r}f",
+                "HOUR_BODY_WIDTH": f"{self.peak!r}f",
+                "MIDDLE_WIDTH": f"{self.mid!r}f",
+                "MINUTE_TIP_WIDTH": f"{self.tip!r}f",
+                "HOUR_SWELL_POSITION": f"{self.swell!r}f"}
+
+
+SHIPPED_WIDTHS = Widths()
+
+
 # --- the context a profile is evaluated against -----------------------------
 
 @dataclass
@@ -71,6 +111,7 @@ class Context:
     waist_opening: float   # 0..1, the shipped near-overlap waist term
     separation: float      # degrees between the hands
     points: list           # centerline points, for curvature-aware profiles
+    widths: Widths = SHIPPED_WIDTHS
 
     @property
     def pivot_position(self):
@@ -82,11 +123,11 @@ class Context:
     @property
     def middle_width(self):
         """What the shipped code calls effective_middle_width."""
-        return lerp(K["MINIMUM_STROKE_WIDTH"], K["MIDDLE_WIDTH"],
+        return lerp(K["MINIMUM_STROKE_WIDTH"], self.widths.mid,
                     smooth_unit(self.waist_opening))
 
 
-def context_from(frame, separation):
+def context_from(frame, separation, widths=SHIPPED_WIDTHS):
     # arc length comes from the C's own s_cumulative_length rather than being
     # recomputed from the printed points: the profile is a function of it, so
     # re-deriving it would compare against a slightly different parameter.
@@ -94,7 +135,7 @@ def context_from(frame, separation):
     arc = [row[4] for row in frame["centerline"]]
     return Context(arc=arc, total=arc[-1], pivot=frame["pivot"],
                    waist_opening=frame["scale"], separation=separation,
-                   points=points)
+                   points=points, widths=widths)
 
 
 # --- helpers, matching main.c's own -----------------------------------------
@@ -122,6 +163,7 @@ def shipped(ctx, pressure=None):
     profile with the multiplier taken off.
     """
     variation = K["PRESSURE_VARIATION"] if pressure is None else pressure
+    k = ctx.widths
     widths = []
     pivot_position = ctx.pivot_position
     middle = ctx.middle_width
@@ -132,24 +174,20 @@ def shipped(ctx, pressure=None):
                 width = middle
             else:
                 hour = clamp(position / pivot_position, 0.0, 1.0)
-                if hour <= K["HOUR_SWELL_POSITION"]:
-                    swell = (hour / K["HOUR_SWELL_POSITION"]
-                             if K["HOUR_SWELL_POSITION"] > K["VECTOR_EPSILON"]
+                if hour <= k.swell:
+                    swell = (hour / k.swell if k.swell > K["VECTOR_EPSILON"]
                              else 1.0)
-                    width = lerp(K["HOUR_TIP_WIDTH"], K["HOUR_BODY_WIDTH"],
-                                 smooth_unit(swell))
+                    width = lerp(k.hour_tip, k.peak, smooth_unit(swell))
                 else:
-                    contraction = ((hour - K["HOUR_SWELL_POSITION"])
-                                   / (1.0 - K["HOUR_SWELL_POSITION"]))
-                    width = lerp(K["HOUR_BODY_WIDTH"], middle,
-                                 smooth_unit(contraction))
+                    contraction = (hour - k.swell) / (1.0 - k.swell)
+                    width = lerp(k.peak, middle, smooth_unit(contraction))
         else:
             remaining = 1.0 - pivot_position
             if remaining < K["VECTOR_EPSILON"]:
                 width = middle
             else:
                 minute = clamp((position - pivot_position) / remaining, 0.0, 1.0)
-                width = lerp(middle, K["MINUTE_TIP_WIDTH"], smooth_unit(minute))
+                width = lerp(middle, k.tip, smooth_unit(minute))
 
         envelope = 4.0 * position * (1.0 - position)
         width *= 1.0 + variation * envelope * (pivot_position - position)
@@ -170,14 +208,19 @@ def separation_degrees(hour, minute):
     return min(d, 360.0 - d)
 
 
-def check(times=None, verbose=True):
-    """`shipped` must reproduce the C's own widths, or nothing else here counts."""
+def check(times=None, verbose=True, overrides=None, widths=SHIPPED_WIDTHS):
+    """`shipped` must reproduce the C's own widths, or nothing else here counts.
+
+    With `overrides` and the `widths` they correspond to, the same holds for
+    main.c compiled with other constants.
+    """
     times = times or [(h, m) for h in range(12) for m in range(60)]
-    frames = raster.gather(times=times, want_frames=False)
+    frames = raster.gather(times=times, want_frames=False, overrides=overrides)
     worst = 0.0
     worst_at = None
     for frame in frames:
-        ctx = context_from(frame, separation_degrees(frame["hour"], frame["minute"]))
+        ctx = context_from(frame, separation_degrees(frame["hour"], frame["minute"]),
+                           widths)
         mine = to_polygon_widths(shipped(ctx))
         theirs = [row[3] for row in frame["centerline"]]
         for a, b in zip(mine, theirs):
@@ -285,7 +328,7 @@ def thinning_floor(floor):
     """The shipped rule, but the waist bottoms out at `floor` px, not 1 px."""
     def profile(ctx, dense=None):
         t = smooth_unit(ctx.waist_opening)
-        middle = lerp(floor, K["MIDDLE_WIDTH"], t)
+        middle = lerp(floor, ctx.widths.mid, t)
         saved = ctx.waist_opening
         # solve for the opening that yields this middle through the shipped path
         lo, hi = 0.0, 1.0
@@ -369,82 +412,86 @@ TRACK1 = (
 # The domain is from the end of the hour swell to the minute point. The swell is
 # the defined hour part and is reproduced exactly as shipped in every variant.
 
-PEAK = K["HOUR_BODY_WIDTH"]
-TIP = K["MINUTE_TIP_WIDTH"]
-
-
 def domain(ctx):
     """(arc where the swell ends, arc span of the domain, pivot's place in it)."""
-    start = K["HOUR_SWELL_POSITION"] * ctx.arc[ctx.pivot]
+    start = ctx.widths.swell * ctx.arc[ctx.pivot]
     span = ctx.total - start
     return start, span, (ctx.arc[ctx.pivot] - start) / span
 
 
 def from_shape(shape, name=None):
-    """Lift w(u, u_pivot, span_px) on the domain to a width per sample.
+    """Lift w(u, u_pivot, span_px, widths) on the domain to a width per sample.
 
     u runs 0 at the swell's peak to 1 at the minute point; u_pivot is where the
     pivot falls in that parameter, which is NOT one half and moves with the time.
+    `widths` is the configuration's Widths, so one shape serves every thickness.
     """
     def profile(ctx, dense=None):
         start, span, u_pivot = domain(ctx)
+        k = ctx.widths
         widths = []
         for a in ctx.arc:
             if a <= start:
                 t = a / start if start > K["VECTOR_EPSILON"] else 1.0
-                widths.append(lerp(K["HOUR_TIP_WIDTH"], PEAK, smooth_unit(t)))
+                widths.append(lerp(k.hour_tip, k.peak, smooth_unit(t)))
             else:
-                widths.append(shape((a - start) / span, u_pivot, span))
+                widths.append(shape((a - start) / span, u_pivot, span, k))
         return widths
     if name:
         profile.__name__ = name
     return profile
 
 
-def two_smoothstep(mid, at=None):
+def two_smoothstep(mid=None, at=None):
     """Peak -> `mid` -> point in two smoothsteps: the shipped shape.
 
-    `at` places the control value at a fixed fraction of the domain instead of
-    at the pivot. With at=None and mid=MIDDLE_WIDTH this is exactly the shipped
-    profile with the waist open and the pressure multiplier off.
+    `mid` defaults to the configuration's MIDDLE_WIDTH. `at` places the control
+    value at a fixed fraction of the domain instead of at the pivot. With both
+    left alone this is exactly the shipped profile with the waist open and the
+    pressure multiplier off.
     """
-    def shape(u, u_pivot, span):
+    def shape(u, u_pivot, span, k):
+        m = k.mid if mid is None else mid
         c = u_pivot if at is None else at
         if u <= c:
-            return lerp(PEAK, mid, smooth_unit(u / c))
-        return lerp(mid, TIP, smooth_unit((u - c) / (1.0 - c)))
+            return lerp(k.peak, m, smooth_unit(u / c))
+        return lerp(m, k.tip, smooth_unit((u - c) / (1.0 - c)))
     return shape
 
 
-def single_smoothstep(u, u_pivot, span):
+def single_smoothstep(u, u_pivot, span, k):
     """Peak -> point in one smoothstep. No control value: MIDDLE_WIDTH's null."""
-    return lerp(PEAK, TIP, smooth_unit(u))
+    return lerp(k.peak, k.tip, smooth_unit(u))
 
 
 def hold_then_reduce(hold_px):
     """Full width for `hold_px` of arc, then one smoothstep down to the point."""
-    def shape(u, u_pivot, span):
+    def shape(u, u_pivot, span, k):
         h = min(hold_px / span, 0.95)
         if u <= h:
-            return PEAK
-        return lerp(PEAK, TIP, smooth_unit((u - h) / (1.0 - h)))
+            return k.peak
+        return lerp(k.peak, k.tip, smooth_unit((u - h) / (1.0 - h)))
     return shape
 
 
 def power(p):
     """w = tip + (peak - tip)(1 - u)^p. p = 1 is a straight taper."""
-    def shape(u, u_pivot, span):
-        return TIP + (PEAK - TIP) * (1.0 - u) ** p
+    def shape(u, u_pivot, span, k):
+        return k.tip + (k.peak - k.tip) * (1.0 - u) ** p
     return shape
 
 
-def circular(u, u_pivot, span):
+def circular(u, u_pivot, span, k):
     """Quarter-ellipse: holds width, then closes round at the point."""
-    return TIP + (PEAK - TIP) * math.sqrt(max(0.0, 1.0 - u * u))
+    return k.tip + (k.peak - k.tip) * math.sqrt(max(0.0, 1.0 - u * u))
 
 
-BASELINE_SHAPE = two_smoothstep(K["MIDDLE_WIDTH"])
+BASELINE_SHAPE = two_smoothstep()
 baseline = from_shape(BASELINE_SHAPE, "baseline")
+
+#: w = tip + (peak - tip)(1 - u)^2: no control value, and no knowledge of where
+#: the pivot is. What it puts at the pivot is whatever the geometry gives it.
+quadratic = from_shape(power(2.0), "quadratic")
 
 
 def reference(ctx, dense=None):
@@ -464,8 +511,8 @@ def with_bumps(*bumps):
     Each bump is (centre_px, half_width_px, amount_px); centre is signed, so
     negative sits on the hour side. Floored at MINIMUM_STROKE_WIDTH.
     """
-    def shape(u, u_pivot, span):
-        w = BASELINE_SHAPE(u, u_pivot, span)
+    def shape(u, u_pivot, span, k):
+        w = BASELINE_SHAPE(u, u_pivot, span, k)
         from_pivot = (u - u_pivot) * span
         for centre, half_width, amount in bumps:
             w += amount * raised_cosine(from_pivot - centre, half_width)
@@ -475,13 +522,12 @@ def with_bumps(*bumps):
 
 def split_power(p_hour, p_minute, mid=None):
     """A different exponent either side of the pivot, meeting at `mid`."""
-    mid = K["MIDDLE_WIDTH"] if mid is None else mid
-
-    def shape(u, u_pivot, span):
+    def shape(u, u_pivot, span, k):
+        m = k.mid if mid is None else mid
         if u <= u_pivot:
-            return mid + (PEAK - mid) * (1.0 - u / u_pivot) ** p_hour
+            return m + (k.peak - m) * (1.0 - u / u_pivot) ** p_hour
         t = (u - u_pivot) / (1.0 - u_pivot)
-        return TIP + (mid - TIP) * (1.0 - t) ** p_minute
+        return k.tip + (m - k.tip) * (1.0 - t) ** p_minute
     return shape
 
 
@@ -543,7 +589,7 @@ TRACK2_SHAPE = (
     ("hold 30 px, then smoothstep", from_shape(hold_then_reduce(30.0))),
     ("linear taper", from_shape(power(1.0))),
     ("power 0.5 (stays wide, closes late)", from_shape(power(0.5))),
-    ("power 2 (falls early, long thin tail)", from_shape(power(2.0))),
+    ("power 2 (falls early, long thin tail)", quadratic),
     ("power 3", from_shape(power(3.0))),
     ("quarter ellipse", from_shape(circular)),
 )

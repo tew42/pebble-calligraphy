@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Width-profile studies, drawn by the firmware's own rasterizer.
 
-    python3 tools/preview/sheet_profiles.py [kink|price|track2|track3|all]
+    python3 tools/preview/sheet_profiles.py [kink|price|track2|track3|quadratic|all]
     ./shot.sh profiles-track2-control-face ...
 
 Everything is rendered through `raster.render_polygons`, so a profile built in
@@ -13,12 +13,14 @@ shipped profile reproduces the compiled C to 1.4e-6 px over all 720 minutes.
   price   what removing the thinning costs over the whole clock
   track2  symmetric / monotonic profiles, on a no-thinning baseline
   track3  asymmetric / non-monotonic profiles, same baseline
+  quadratic  the quadratic taper at other hand lengths and hour thicknesses
 """
 from __future__ import annotations
 
 import math
 import os
 import sys
+from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import profiles
@@ -150,22 +152,28 @@ def sheet(path, title, notes, times, variants, zoom=5.0, size=170,
 # --- pricing over the whole clock -------------------------------------------
 
 CLOCK = [(h, m) for h in range(12) for m in range(60)]
-_clock_frames = None
+_clock_frames = (None, None)
 
 
-def clock_frames():
+def clock_frames(overrides=None):
+    """Every minute of the clock from main.c, optionally with constants changed.
+
+    Only the last configuration is kept: a clock of framebuffers is 33 MB.
+    """
     global _clock_frames
-    if _clock_frames is None:
-        _clock_frames = raster.gather(times=CLOCK)
-    return _clock_frames
+    key = tuple(sorted((overrides or {}).items()))
+    if _clock_frames[0] != key:
+        _clock_frames = (key, raster.gather(times=CLOCK, overrides=overrides))
+    return _clock_frames[1]
 
 
-def render_clock(fn):
+def render_clock(fn, overrides=None, widths=profiles.SHIPPED_WIDTHS):
     """Every minute of the clock under one profile, as framebuffers."""
     specs = []
-    for frame in clock_frames():
+    for frame in clock_frames(overrides):
         ctx = profiles.context_from(
-            frame, profiles.separation_degrees(frame["hour"], frame["minute"]))
+            frame, profiles.separation_degrees(frame["hour"], frame["minute"]),
+            widths)
         points = [(x, y) for x, y, *_ in frame["centerline"]]
         specs.append((W.polygon_from(points, profiles.to_polygon_widths(fn(ctx)),
                                      W.bisector_tangents(points)),
@@ -257,9 +265,9 @@ def fill_arc(arc, widths):
     return covered / arc[-1] if arc[-1] else 0.0
 
 
-def plot(canvas, x, y, w, h, arc, pivot, widths, under=None):
+def plot(canvas, x, y, w, h, arc, pivot, widths, under=None, top=6.5,
+         ticks=(2, 4, 6)):
     """A row's width profile at one time: requested stroke width against arc."""
-    top = 6.5
     canvas.rect(x, y, w, h, fill="#0b0d10", stroke="#242a31", stroke_width=0.6)
 
     def at(a, v):
@@ -274,7 +282,7 @@ def plot(canvas, x, y, w, h, arc, pivot, widths, under=None):
                         stroke=S.REFERENCE, stroke_width=1.0, opacity=0.65)
     canvas.polyline([at(a, v) for a, v in zip(arc, widths)], stroke=S.INK,
                     stroke_width=1.3)
-    for value in (2, 4, 6):
+    for value in ticks:
         canvas.text(x + w + 3, at(0.0, value)[1] + 2.5, str(value), size=6.5,
                     fill=S.DIM)
 
@@ -412,6 +420,240 @@ def track3() -> int:
     return 0
 
 
+# --- the quadratic taper away from the shipped geometry ---------------------
+
+@dataclass(frozen=True)
+class Setting:
+    """main.c with its hand lengths and hour thickness changed."""
+    hour: float = 0.60
+    minute: float = 0.90
+    body: float = 6.0
+    note: str = ""
+
+    @property
+    def widths(self):
+        return profiles.Widths.for_body(self.body)
+
+    @property
+    def overrides(self):
+        return {**self.widths.overrides(),
+                "HOUR_LENGTH_RATIO": f"{self.hour!r}f",
+                "MINUTE_LENGTH_RATIO": f"{self.minute!r}f"}
+
+    @property
+    def label(self):
+        return (f"hands {self.hour:.2f} / {self.minute:.2f}, body "
+                f"{self.body:g} px" + (f" -- {self.note}" if self.note else ""))
+
+
+#: Inner radii r = L(1 - stem) stay within the 3/5 <= r_m/r_h <= 5/3 budget of
+#: section 34 for every one of these: 1.20, 1.44, 1.03, 1.00, 1.20, 1.38.
+LENGTH_SETTINGS = (
+    Setting(note="shipped"),
+    Setting(hour=0.50, note="short hour hand"),
+    Setting(hour=0.70, note="long hour hand"),
+    Setting(minute=0.75, note="short minute hand"),
+    Setting(hour=0.50, minute=0.75, note="both smaller"),
+    Setting(hour=0.55, minute=0.95, note="most contrast"),
+)
+
+THICKNESS_SETTINGS = (
+    Setting(body=4.0),
+    Setting(body=6.0, note="shipped"),
+    Setting(body=8.0),
+    Setting(body=10.0),
+    Setting(body=12.0, note="the 2x ceiling"),
+)
+
+CORNER_SETTINGS = (
+    Setting(hour=0.50, body=12.0, note="thick, short hour"),
+    Setting(hour=0.70, body=12.0, note="thick, long hour"),
+    Setting(minute=0.75, body=4.0, note="thin, short minute"),
+    Setting(hour=0.55, minute=0.95, body=12.0, note="thick, most contrast"),
+)
+
+
+def measure(setting):
+    """One setting over the whole clock: the control, then both profiles."""
+    overrides, widths = setting.overrides, setting.widths
+    frames = clock_frames(overrides)
+    as_drawn = render_clock(profiles.reference, overrides, widths)
+    identical = sum(a == f["buffer"] for a, f in zip(as_drawn, frames))
+    if identical != len(frames):
+        raise SystemExit(f"{setting.label}: python reproduces the C on only "
+                         f"{identical}/720 minutes; not drawing it")
+    control = render_clock(profiles.baseline, overrides, widths)
+    quadratic = render_clock(profiles.quadratic, overrides, widths)
+
+    place, at_pivot = [], []
+    for frame in frames:
+        ctx = profiles.context_from(
+            frame, profiles.separation_degrees(frame["hour"], frame["minute"]),
+            widths)
+        place.append(profiles.domain(ctx)[2])
+        at_pivot.append(profiles.quadratic(ctx)[ctx.pivot])
+
+    def cells(fn, buffers):
+        out = []
+        for hour, minute in NORMAL_TIMES + CLOSING_TIMES:
+            index = (hour % 12) * 60 + minute
+            frame = frames[index]
+            ctx = profiles.context_from(
+                frame, profiles.separation_degrees(hour, minute), widths)
+            out.append(dict(frame={k: v for k, v in frame.items() if k != "buffer"},
+                            buffer=buffers[index], widths=fn(ctx)))
+        return out
+    return dict(setting=setting, cost=price(quadratic, control),
+                place=(min(place), max(place)),
+                at_pivot=(min(at_pivot), max(at_pivot)),
+                control=cells(profiles.baseline, control),
+                quadratic=cells(profiles.quadratic, quadratic))
+
+
+def setting_sheets(stem, title, notes, settings, pair=True):
+    """The quadratic at each setting, beside the control-value profile it
+    would replace (pair=True), as a whole-face sheet and a 4x crop."""
+    measured = [measure(setting) for setting in settings]
+    times = NORMAL_TIMES + CLOSING_TIMES
+    plot_col = times.index(PLOT_TIME)
+    loud = "#f4d35e"
+
+    rows = []
+    for m in measured:
+        if pair:
+            rows.append((m, "control", True))
+        rows.append((m, "quadratic", not pair))
+
+    for suffix, zoom, size, what in (
+            ("face", 1.0, 200, "Each cell is the whole 200x228 emery framebuffer "
+             "at actual size."),
+            ("zoom", 5.0, 170, "Each cell is the 42 px around the watch centre at "
+             "4x; one square is one device pixel.")):
+        label_w, gap, group_gap, pair_gap = 380, 10, 26, 16
+        lines = notes + [what]
+        top = 118 + 15 * len(lines)
+        cell_h = 228 if zoom <= 1.0 else size
+
+        def column_x(col):
+            return (label_w + col * (size + gap)
+                    + (group_gap if col >= len(NORMAL_TIMES) else 0))
+        ys, y = [], top
+        for m, kind, first in rows:
+            if first and ys:
+                y += pair_gap
+            ys.append(y)
+            y += cell_h + gap
+        canvas = S.Canvas(column_x(len(times)) + 20, y + 24, background=S.PAGE)
+        canvas.text(24, 34, f"{title} -- {suffix}", size=17, fill=S.LABEL,
+                    weight="600")
+        for i, line in enumerate(lines):
+            canvas.text(24, 56 + 15 * i, line, size=10, fill=S.DIM)
+        canvas.text(column_x(0), top - 28, "AS A WATCHFACE", size=9, fill=S.DIM,
+                    weight="600")
+        canvas.text(column_x(len(NORMAL_TIMES)), top - 28,
+                    "HANDS CLOSING -- does the pivot read broad?", size=9,
+                    fill=S.DIM, weight="600")
+        for col, (hour, minute) in enumerate(times):
+            d = profiles.separation_degrees(hour, minute)
+            canvas.text(column_x(col) + size / 2, top - 10,
+                        f"{hour % 12 or 12:02d}:{minute:02d}  d={d:.1f}", size=9,
+                        fill=S.LABEL, anchor="middle", weight="600")
+
+        for (m, kind, first), y in zip(rows, ys):
+            setting, k = m["setting"], m["setting"].widths
+            cells = m[kind]
+            arc = [row[4] for row in cells[plot_col]["frame"]["centerline"]]
+            pivot = cells[plot_col]["frame"]["pivot"]
+            share = fill_arc(arc, cells[plot_col]["widths"])
+            text_y = y + 14
+            if first:
+                canvas.text(24, text_y, setting.label, size=10, fill=S.LABEL,
+                            weight="600")
+                text_y += 13
+            if kind == "control":
+                canvas.text(24, text_y, f"two smoothsteps through {k.mid:g} px "
+                            f"at the pivot", size=8.5, fill=S.LABEL)
+                canvas.text(24, text_y + 12,
+                            f"pivot at {m['place'][0]:.2f}-{m['place'][1]:.2f} of "
+                            f"the arc, over the clock", size=8, fill=S.DIM)
+                text_y += 24
+            else:
+                lo, hi = m["at_pivot"]
+                off = max(abs(lo - k.mid), abs(hi - k.mid))
+                cost = m["cost"]
+                canvas.text(24, text_y, "quadratic taper, no control value",
+                            size=8.5, fill=S.LABEL)
+                canvas.text(24, text_y + 12,
+                            f"at the pivot: {lo:.2f}-{hi:.2f} px  "
+                            f"(control value {k.mid:g})", size=8,
+                            fill=loud if off >= 0.3 else S.DIM)
+                canvas.text(24, text_y + 24,
+                            f"vs control, 720 min: {cost['total'] / 720.0:.1f} "
+                            f"px/frame  (+{cost['appear']} -{cost['vanish']} "
+                            f"grey {cost['one'] + cost['multi']})", size=8,
+                            fill=S.DIM)
+                text_y += 36
+            canvas.text(24, text_y,
+                        f"fill carries {100.0 * share:.0f}% of the arc at "
+                        f"{PLOT_TIME[0]}:{PLOT_TIME[1]:02d}", size=8, fill=S.DIM)
+            scale_top = max(6.5, k.peak + 0.5)
+            ticks = (2, 4, 6) if scale_top <= 6.5 else (4, 8, 12)
+            plot(canvas, 24, y + 78, 262, cell_h - 86 if zoom > 1.0 else 84,
+                 arc, pivot, cells[plot_col]["widths"],
+                 m["control"][plot_col]["widths"] if kind == "quadratic" else None,
+                 top=scale_top, ticks=tuple(t for t in ticks if t < scale_top))
+            for col, cell in enumerate(cells):
+                ox = column_x(col)
+                W.panel(canvas, ox, y, size, cell_h, cell["frame"], 0, zoom,
+                        cell["buffer"])
+                canvas.text(ox + 4, y + cell_h - 4,
+                            f"pivot w {cell['widths'][cell['frame']['pivot']]:.2f}",
+                            size=7, fill=S.DIM)
+        os.makedirs(OUT, exist_ok=True)
+        path = os.path.join(OUT, f"{stem}-{suffix}.svg")
+        canvas.write(path)
+        print("wrote", path)
+
+    for m in measured:
+        k = m["setting"].widths
+        print(f"  {m['setting'].label:52s} pivot at {m['place'][0]:.3f}-"
+              f"{m['place'][1]:.3f}; quadratic there {m['at_pivot'][0]:.2f}-"
+              f"{m['at_pivot'][1]:.2f} vs {k.mid:g}; " + describe(m["cost"]))
+    return measured
+
+
+QUADRATIC_NOTES = [
+    "Every setting is main.c compiled with those constants; the Python profile "
+    "is checked pixel-identical to it on all 720 minutes before anything is drawn.",
+    "Thinning and pressure are off. The hour end scales with the body: tip = "
+    "body / 2, and the widening takes 5% of the hour side per 6 px of body.",
+    "Left of each row: requested stroke width against arc at 10:10 (white), the "
+    "control-value profile in orange, the pivot in blue. Under the dashed line "
+    "only the outline and core draw.",
+]
+
+
+def quadratic() -> int:
+    setting_sheets(
+        "profiles-quadratic-lengths",
+        "Quadratic taper across hand lengths",
+        ["w = tip + (peak - tip)(1 - u)^2 has no control value, so what it puts "
+         "at the pivot depends on where the pivot falls in the arc. Hour body "
+         "6 px throughout."] + QUADRATIC_NOTES, LENGTH_SETTINGS)
+    setting_sheets(
+        "profiles-quadratic-thickness",
+        "Quadratic taper across hour thickness",
+        ["w = tip + (peak - tip)(1 - u)^2 has no control value, so what it puts "
+         "at the pivot scales with the peak. Hands 0.60 / 0.90 throughout."]
+        + QUADRATIC_NOTES, THICKNESS_SETTINGS)
+    setting_sheets(
+        "profiles-quadratic-corners",
+        "Quadratic taper, lengths and thickness together",
+        ["The quadratic alone, where the two changes compound."]
+        + QUADRATIC_NOTES, CORNER_SETTINGS, pair=False)
+    return 0
+
+
 def kink() -> int:
     notes = [
         "Near overlap the centerline folds back on itself. At exact overlap it is a true "
@@ -443,7 +685,7 @@ def kink() -> int:
 def main(argv) -> int:
     which = argv[1] if len(argv) > 1 else "all"
     jobs = {"kink": kink, "price": price_thinning, "track2": track2,
-            "track3": track3}
+            "track3": track3, "quadratic": quadratic}
     if which == "all":
         return max(job() for job in jobs.values())
     if which not in jobs:
